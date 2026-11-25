@@ -1,4 +1,8 @@
---// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES & AUTO FARM
+--// ====================================================================
+--// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v3.0
+--// Interface Hub Mobile com Abas, Switches Animados e Telemetria
+--// ====================================================================
+
 if _G.RoubeUmOvo_Cleanup then
     pcall(_G.RoubeUmOvo_Cleanup)
 end
@@ -14,7 +18,6 @@ local VirtualUser = game:GetService("VirtualUser")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Configurações iniciais (podem ser alteradas pelo painel Streamlit ou pela UI no jogo)
 local Config = _G.RoubeUmOvo_Config or {}
 
 local State = {
@@ -23,9 +26,11 @@ local State = {
     AutoEvents = (Config.AutoEvents ~= nil) and Config.AutoEvents or true,
     AutoTreadmill = (Config.AutoTreadmill ~= nil) and Config.AutoTreadmill or true,
     AutoClaim = (Config.AutoClaim ~= nil) and Config.AutoClaim or true,
+    OnlyRarePlus = (Config.OnlyRarePlus ~= nil) and Config.OnlyRarePlus or false,
     AntiAFK = true,
     MoveSpeed = Config.MoveSpeed or 135,
-    Status = "Inicializando..."
+    Status = "Pronto para iniciar",
+    ActionsCount = 0
 }
 
 local Connections = {}
@@ -41,6 +46,10 @@ local function CaptureInitialSpawn()
     end
 end
 task.spawn(CaptureInitialSpawn)
+
+--// ====================================================================
+--// MÓDULO 1: MOVIMENTAÇÃO E INTERAÇÃO SEGURA
+--// ====================================================================
 
 local function GetCharacterParts()
     local char = LocalPlayer.Character
@@ -153,6 +162,10 @@ local function InteractWithTarget(instance)
         end)
     end
 end
+
+--// ====================================================================
+--// MÓDULO 2: DETECÇÃO DE BASE, OVOS E EVENTOS
+--// ====================================================================
 
 local function FindMyBase()
     if CachedBase and CachedBase.Parent then
@@ -280,19 +293,21 @@ local function FindBestBiomeEgg()
         if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) then
             local n = obj.Name:lower()
             if (n:find("egg") or n:find("ovo")) and not n:find("guardian") and not n:find("shop") and not n:find("ui") then
-                local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
-                if part and part.Transparency < 0.9 then
-                    local hasPrompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true) ~= nil
-                    local hasTouch = part:FindFirstChildOfClass("TouchTransmitter") ~= nil
-                    local parentName = obj.Parent and obj.Parent.Name:lower() or ""
-                    if hasPrompt or hasTouch or parentName:find("egg") or parentName:find("nest") then
-                        local dist = (hrp.Position - part.Position).Magnitude
-                        local rarity = GetRarityScore(n)
-                        local priority = (rarity * 15) - dist
-                        if priority > bestPriority then
-                            bestPriority = priority
-                            bestTarget = obj
-                            bestPart = part
+                local rarity = GetRarityScore(n)
+                if not State.OnlyRarePlus or rarity >= 30 then
+                    local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
+                    if part and part.Transparency < 0.9 then
+                        local hasPrompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true) ~= nil
+                        local hasTouch = part:FindFirstChildOfClass("TouchTransmitter") ~= nil
+                        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
+                        if hasPrompt or hasTouch or parentName:find("egg") or parentName:find("nest") then
+                            local dist = (hrp.Position - part.Position).Magnitude
+                            local priority = (rarity * 15) - dist
+                            if priority > bestPriority then
+                                bestPriority = priority
+                                bestTarget = obj
+                                bestPart = part
+                            end
                         end
                     end
                 end
@@ -371,140 +386,38 @@ local function ClaimQuestsAndIndex()
     end
 end
 
-local StatusLabelRef = nil
+--// ====================================================================
+--// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v3.0)
+--// ====================================================================
 
-local function CreateMobileUI()
-    local existing = PlayerGui:FindFirstChild("RoubeUmOvo_AutoMissionUI")
-    if existing then existing:Destroy() end
+local UIRefs = {
+    StatusText = nil,
+    BaseText = nil,
+    CounterText = nil,
+    SpeedValueText = nil
+}
 
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "RoubeUmOvo_AutoMissionUI"
-    screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = PlayerGui
+local Palette = {
+    BgMain = Color3.fromRGB(15, 17, 26),
+    BgHeader = Color3.fromRGB(22, 26, 39),
+    BgCard = Color3.fromRGB(24, 28, 42),
+    BgCardHover = Color3.fromRGB(30, 35, 52),
+    Stroke = Color3.fromRGB(45, 53, 78),
+    Accent = Color3.fromRGB(0, 195, 255),
+    Success = Color3.fromRGB(16, 185, 129),
+    OffPill = Color3.fromRGB(55, 62, 82),
+    Danger = Color3.fromRGB(220, 53, 69),
+    TextPrimary = Color3.fromRGB(244, 246, 252),
+    TextSecondary = Color3.fromRGB(155, 165, 190)
+}
 
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 250, 0, 245)
-    mainFrame.Position = UDim2.new(0.04, 0, 0.22, 0)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Active = true
-    mainFrame.Parent = screenGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = mainFrame
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 185, 255)
-    stroke.Thickness = 1.5
-    stroke.Parent = mainFrame
-
-    local topBar = Instance.new("Frame")
-    topBar.Name = "TopBar"
-    topBar.Size = UDim2.new(1, 0, 0, 34)
-    topBar.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
-    topBar.BorderSizePixel = 0
-    topBar.Parent = mainFrame
-
-    local topCorner = Instance.new("UICorner")
-    topCorner.CornerRadius = UDim.new(0, 10)
-    topCorner.Parent = topBar
-
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -45, 1, 0)
-    title.Position = UDim2.new(0, 10, 0, 0)
-    title.BackgroundTransparency = 1
-    title.Text = "AUTO MISSÕES • OVO"
-    title.TextColor3 = Color3.fromRGB(240, 245, 255)
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 13
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = topBar
-
-    local minBtn = Instance.new("TextButton")
-    minBtn.Size = UDim2.new(0, 28, 0, 24)
-    minBtn.Position = UDim2.new(1, -33, 0.5, -12)
-    minBtn.BackgroundColor3 = Color3.fromRGB(45, 52, 70)
-    minBtn.Text = "-"
-    minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    minBtn.Font = Enum.Font.GothamBold
-    minBtn.TextSize = 16
-    minBtn.Parent = topBar
-
-    local minCorner = Instance.new("UICorner")
-    minCorner.CornerRadius = UDim.new(0, 6)
-    minCorner.Parent = minBtn
-
-    local content = Instance.new("Frame")
-    content.Name = "Content"
-    content.Size = UDim2.new(1, -16, 1, -42)
-    content.Position = UDim2.new(0, 8, 0, 38)
-    content.BackgroundTransparency = 1
-    content.Parent = mainFrame
-
-    local listLayout = Instance.new("UIListLayout")
-    listLayout.Padding = UDim.new(0, 6)
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    listLayout.Parent = content
-
-    local statusBox = Instance.new("TextLabel")
-    statusBox.Size = UDim2.new(1, 0, 0, 26)
-    statusBox.BackgroundColor3 = Color3.fromRGB(28, 34, 48)
-    statusBox.Text = "Status: Ativo"
-    statusBox.TextColor3 = Color3.fromRGB(110, 235, 180)
-    statusBox.Font = Enum.Font.GothamSemibold
-    statusBox.TextSize = 11
-    statusBox.LayoutOrder = 1
-    statusBox.Parent = content
-    StatusLabelRef = statusBox
-
-    local stCorner = Instance.new("UICorner")
-    stCorner.CornerRadius = UDim.new(0, 6)
-    stCorner.Parent = statusBox
-
-    local function AddToggle(order, labelText, stateKey)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, 0, 0, 30)
-        btn.BackgroundColor3 = State[stateKey] and Color3.fromRGB(22, 115, 85) or Color3.fromRGB(45, 48, 60)
-        btn.Text = labelText .. ": " .. (State[stateKey] and "ON" or "OFF")
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.Font = Enum.Font.GothamSemibold
-        btn.TextSize = 12
-        btn.LayoutOrder = order
-        btn.Parent = content
-
-        local bCorner = Instance.new("UICorner")
-        bCorner.CornerRadius = UDim.new(0, 6)
-        bCorner.Parent = btn
-
-        btn.MouseButton1Click:Connect(function()
-            State[stateKey] = not State[stateKey]
-            btn.BackgroundColor3 = State[stateKey] and Color3.fromRGB(22, 115, 85) or Color3.fromRGB(45, 48, 60)
-            btn.Text = labelText .. ": " .. (State[stateKey] and "ON" or "OFF")
-        end)
-    end
-
-    AddToggle(2, "Auto Roubar & Entregar", "AutoEggs")
-    AddToggle(3, "Auto Itens de Evento", "AutoEvents")
-    AddToggle(4, "Auto Esteira (Speed)", "AutoTreadmill")
-    AddToggle(5, "Auto Resgatar Missões", "AutoClaim")
-
-    local minimized = false
-    minBtn.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        content.Visible = not minimized
-        mainFrame.Size = minimized and UDim2.new(0, 250, 0, 34) or UDim2.new(0, 250, 0, 245)
-        minBtn.Text = minimized and "+" or "-"
-    end)
-
+local function MakeDraggable(handle, targetFrame)
     local dragging, dragInput, dragStart, startPos
-    topBar.InputBegan:Connect(function(input)
+    handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
-            startPos = mainFrame.Position
+            startPos = targetFrame.Position
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
                     dragging = false
@@ -513,7 +426,7 @@ local function CreateMobileUI()
         end
     end)
 
-    topBar.InputChanged:Connect(function(input)
+    handle.InputChanged:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
             dragInput = input
         end
@@ -522,7 +435,7 @@ local function CreateMobileUI()
     table.insert(Connections, UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
-            mainFrame.Position = UDim2.new(
+            targetFrame.Position = UDim2.new(
                 startPos.X.Scale, startPos.X.Offset + delta.X,
                 startPos.Y.Scale, startPos.Y.Offset + delta.Y
             )
@@ -530,19 +443,437 @@ local function CreateMobileUI()
     end))
 end
 
+local function CreateProfessionalUI()
+    local existing = PlayerGui:FindFirstChild("RoubeUmOvo_ProHub")
+    if existing then existing:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "RoubeUmOvo_ProHub"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = PlayerGui
+
+    -- Pílula flutuante quando minimizado
+    local miniPill = Instance.new("TextButton")
+    miniPill.Name = "MiniPill"
+    miniPill.Size = UDim2.new(0, 145, 0, 36)
+    miniPill.Position = UDim2.new(0.04, 0, 0.22, 0)
+    miniPill.BackgroundColor3 = Palette.BgHeader
+    miniPill.Text = "🥚 OVO HUB • Abrir"
+    miniPill.TextColor3 = Palette.TextPrimary
+    miniPill.Font = Enum.Font.GothamBold
+    miniPill.TextSize = 12
+    miniPill.Visible = false
+    miniPill.Parent = screenGui
+
+    local miniCorner = Instance.new("UICorner")
+    miniCorner.CornerRadius = UDim.new(1, 0)
+    miniCorner.Parent = miniPill
+
+    local miniStroke = Instance.new("UIStroke")
+    miniStroke.Color = Palette.Accent
+    miniStroke.Thickness = 1.5
+    miniStroke.Parent = miniPill
+
+    -- Janela Principal
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 285, 0, 336)
+    mainFrame.Position = UDim2.new(0.04, 0, 0.22, 0)
+    mainFrame.BackgroundColor3 = Palette.BgMain
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Active = true
+    mainFrame.Parent = screenGui
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 12)
+    mainCorner.Parent = mainFrame
+
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Color = Palette.Stroke
+    mainStroke.Thickness = 1.5
+    mainStroke.Parent = mainFrame
+
+    -- Cabeçalho
+    local topBar = Instance.new("Frame")
+    topBar.Name = "TopBar"
+    topBar.Size = UDim2.new(1, 0, 0, 40)
+    topBar.BackgroundColor3 = Palette.BgHeader
+    topBar.BorderSizePixel = 0
+    topBar.Parent = mainFrame
+
+    local topCorner = Instance.new("UICorner")
+    topCorner.CornerRadius = UDim.new(0, 12)
+    topCorner.Parent = topBar
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -85, 1, 0)
+    title.Position = UDim2.new(0, 12, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "🥚 ROUBE UM OVO • PRO"
+    title.TextColor3 = Palette.TextPrimary
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 13
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = topBar
+
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 28, 0, 26)
+    minBtn.Position = UDim2.new(1, -66, 0.5, -13)
+    minBtn.BackgroundColor3 = Palette.BgCard
+    minBtn.Text = "—"
+    minBtn.TextColor3 = Palette.TextPrimary
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 13
+    minBtn.Parent = topBar
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 28, 0, 26)
+    closeBtn.Position = UDim2.new(1, -34, 0.5, -13)
+    closeBtn.BackgroundColor3 = Palette.Danger
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 12
+    closeBtn.Parent = topBar
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+    -- Barra de Abas
+    local tabBar = Instance.new("Frame")
+    tabBar.Size = UDim2.new(1, -16, 0, 32)
+    tabBar.Position = UDim2.new(0, 8, 0, 46)
+    tabBar.BackgroundColor3 = Palette.BgCard
+    tabBar.BorderSizePixel = 0
+    tabBar.Parent = mainFrame
+    Instance.new("UICorner", tabBar).CornerRadius = UDim.new(0, 8)
+
+    local tabLayout = Instance.new("UIListLayout")
+    tabLayout.FillDirection = Enum.FillDirection.Horizontal
+    tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    tabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    tabLayout.Padding = UDim.new(0, 4)
+    tabLayout.Parent = tabBar
+
+    -- Container das Páginas
+    local pageHolder = Instance.new("Frame")
+    pageHolder.Size = UDim2.new(1, -16, 1, -88)
+    pageHolder.Position = UDim2.new(0, 8, 0, 84)
+    pageHolder.BackgroundTransparency = 1
+    pageHolder.Parent = mainFrame
+
+    local pages = {}
+    local tabButtons = {}
+
+    local function CreatePage(name)
+        local page = Instance.new("Frame")
+        page.Name = name
+        page.Size = UDim2.new(1, 0, 1, 0)
+        page.BackgroundTransparency = 1
+        page.Visible = false
+        page.Parent = pageHolder
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 6)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Parent = page
+
+        pages[name] = page
+        return page
+    end
+
+    local pageMissions = CreatePage("Missoes")
+    local pageSettings = CreatePage("Ajustes")
+    local pageStatus = CreatePage("Status")
+
+    local function SelectTab(tabKey)
+        for key, page in pairs(pages) do
+            page.Visible = (key == tabKey)
+        end
+        for key, btn in pairs(tabButtons) do
+            local active = (key == tabKey)
+            btn.BackgroundColor3 = active and Palette.Accent or Color3.fromRGB(0, 0, 0)
+            btn.BackgroundTransparency = active and 0 or 1
+            btn.TextColor3 = active and Color3.fromRGB(10, 15, 25) or Palette.TextSecondary
+        end
+    end
+
+    local function AddTabButton(tabKey, labelText)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0.315, 0, 0, 24)
+        btn.BackgroundTransparency = 1
+        btn.Text = labelText
+        btn.TextColor3 = Palette.TextSecondary
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.Parent = tabBar
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+        btn.MouseButton1Click:Connect(function()
+            SelectTab(tabKey)
+        end)
+        tabButtons[tabKey] = btn
+    end
+
+    AddTabButton("Missoes", "🎯 Missões")
+    AddTabButton("Ajustes", "⚡ Ajustes")
+    AddTabButton("Status", "📊 Status")
+
+    -- Construtor de Switch Animado Profissional
+    local function AddToggleCard(parentPage, order, titleText, subtitleText, stateKey)
+        local card = Instance.new("TextButton")
+        card.Size = UDim2.new(1, 0, 0, 42)
+        card.BackgroundColor3 = Palette.BgCard
+        card.Text = ""
+        card.AutoButtonColor = false
+        card.LayoutOrder = order
+        card.Parent = parentPage
+        Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+
+        local cardStroke = Instance.new("UIStroke")
+        cardStroke.Color = Palette.Stroke
+        cardStroke.Thickness = 1
+        cardStroke.Parent = card
+
+        local lblTitle = Instance.new("TextLabel")
+        lblTitle.Size = UDim2.new(1, -64, 0, 18)
+        lblTitle.Position = UDim2.new(0, 10, 0, 5)
+        lblTitle.BackgroundTransparency = 1
+        lblTitle.Text = titleText
+        lblTitle.TextColor3 = Palette.TextPrimary
+        lblTitle.Font = Enum.Font.GothamSemibold
+        lblTitle.TextSize = 12
+        lblTitle.TextXAlignment = Enum.TextXAlignment.Left
+        lblTitle.Parent = card
+
+        local lblSub = Instance.new("TextLabel")
+        lblSub.Size = UDim2.new(1, -64, 0, 14)
+        lblSub.Position = UDim2.new(0, 10, 0, 23)
+        lblSub.BackgroundTransparency = 1
+        lblSub.Text = subtitleText
+        lblSub.TextColor3 = Palette.TextSecondary
+        lblSub.Font = Enum.Font.Gotham
+        lblSub.TextSize = 10
+        lblSub.TextXAlignment = Enum.TextXAlignment.Left
+        lblSub.Parent = card
+
+        -- Pílula do Switch
+        local switchBg = Instance.new("Frame")
+        switchBg.Size = UDim2.new(0, 42, 0, 22)
+        switchBg.Position = UDim2.new(1, -52, 0.5, -11)
+        switchBg.BackgroundColor3 = State[stateKey] and Palette.Success or Palette.OffPill
+        switchBg.BorderSizePixel = 0
+        switchBg.Parent = card
+        Instance.new("UICorner", switchBg).CornerRadius = UDim.new(1, 0)
+
+        local knob = Instance.new("Frame")
+        knob.Size = UDim2.new(0, 16, 0, 16)
+        knob.Position = State[stateKey] and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+        knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        knob.BorderSizePixel = 0
+        knob.Parent = switchBg
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+        local function RefreshVisual()
+            local isOn = State[stateKey]
+            TweenService:Create(switchBg, TweenInfo.new(0.18), {
+                BackgroundColor3 = isOn and Palette.Success or Palette.OffPill
+            }):Play()
+            TweenService:Create(knob, TweenInfo.new(0.18), {
+                Position = isOn and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+            }):Play()
+        end
+
+        card.MouseButton1Click:Connect(function()
+            State[stateKey] = not State[stateKey]
+            RefreshVisual()
+        end)
+    end
+
+    -- ABA 1: MISSÕES
+    AddToggleCard(pageMissions, 1, "Auto Roubar & Entregar", "Coleta ovos nos biomas e leva ao cercado", "AutoEggs")
+    AddToggleCard(pageMissions, 2, "Auto Itens de Evento", "Pega borboletas, sparks, penas e tokens", "AutoEvents")
+    AddToggleCard(pageMissions, 3, "Auto Esteira (Speed)", "Treina velocidade enquanto aguarda ninhos", "AutoTreadmill")
+    AddToggleCard(pageMissions, 4, "Auto Resgatar Missões", "Coleta recompensas de Quests e Pet Index", "AutoClaim")
+    AddToggleCard(pageMissions, 5, "Apenas Ovos Rare+", "Ignora ovos Common e Uncommon", "OnlyRarePlus")
+
+    -- ABA 2: AJUSTES (Velocidade e Anti-AFK)
+    local speedCard = Instance.new("Frame")
+    speedCard.Size = UDim2.new(1, 0, 0, 84)
+    speedCard.BackgroundColor3 = Palette.BgCard
+    speedCard.LayoutOrder = 1
+    speedCard.Parent = pageSettings
+    Instance.new("UICorner", speedCard).CornerRadius = UDim.new(0, 8)
+    Instance.new("UIStroke", speedCard).Color = Palette.Stroke
+
+    local speedTitle = Instance.new("TextLabel")
+    speedTitle.Size = UDim2.new(1, -20, 0, 20)
+    speedTitle.Position = UDim2.new(0, 10, 0, 6)
+    speedTitle.BackgroundTransparency = 1
+    speedTitle.Text = "Velocidade de Deslocamento: " .. tostring(State.MoveSpeed)
+    speedTitle.TextColor3 = Palette.TextPrimary
+    speedTitle.Font = Enum.Font.GothamSemibold
+    speedTitle.TextSize = 12
+    speedTitle.TextXAlignment = Enum.TextXAlignment.Left
+    speedTitle.Parent = speedCard
+    UIRefs.SpeedValueText = speedTitle
+
+    local function UpdateSpeed(newVal)
+        State.MoveSpeed = math.clamp(newVal, 60, 240)
+        speedTitle.Text = "Velocidade de Deslocamento: " .. tostring(State.MoveSpeed)
+    end
+
+    local btnMinus = Instance.new("TextButton")
+    btnMinus.Size = UDim2.new(0, 36, 0, 26)
+    btnMinus.Position = UDim2.new(0, 10, 0, 30)
+    btnMinus.BackgroundColor3 = Palette.BgCardHover
+    btnMinus.Text = "-15"
+    btnMinus.TextColor3 = Palette.TextPrimary
+    btnMinus.Font = Enum.Font.GothamBold
+    btnMinus.TextSize = 11
+    btnMinus.Parent = speedCard
+    Instance.new("UICorner", btnMinus).CornerRadius = UDim.new(0, 6)
+    btnMinus.MouseButton1Click:Connect(function() UpdateSpeed(State.MoveSpeed - 15) end)
+
+    local btnPlus = Instance.new("TextButton")
+    btnPlus.Size = UDim2.new(0, 36, 0, 26)
+    btnPlus.Position = UDim2.new(0, 52, 0, 30)
+    btnPlus.BackgroundColor3 = Palette.BgCardHover
+    btnPlus.Text = "+15"
+    btnPlus.TextColor3 = Palette.TextPrimary
+    btnPlus.Font = Enum.Font.GothamBold
+    btnPlus.TextSize = 11
+    btnPlus.Parent = speedCard
+    Instance.new("UICorner", btnPlus).CornerRadius = UDim.new(0, 6)
+    btnPlus.MouseButton1Click:Connect(function() UpdateSpeed(State.MoveSpeed + 15) end)
+
+    local presets = {
+        { label = "Seguro (90)", val = 90, x = 96 },
+        { label = "Padrão (135)", val = 135, x = 156 },
+        { label = "Turbo (195)", val = 195, x = 216 }
+    }
+    for _, p in ipairs(presets) do
+        local pBtn = Instance.new("TextButton")
+        pBtn.Size = UDim2.new(0, 54, 0, 26)
+        pBtn.Position = UDim2.new(0, p.x - 4, 0, 30)
+        pBtn.BackgroundColor3 = Palette.BgHeader
+        pBtn.Text = tostring(p.val)
+        pBtn.TextColor3 = Palette.Accent
+        pBtn.Font = Enum.Font.GothamBold
+        pBtn.TextSize = 11
+        pBtn.Parent = speedCard
+        Instance.new("UICorner", pBtn).CornerRadius = UDim.new(0, 6)
+        pBtn.MouseButton1Click:Connect(function() UpdateSpeed(p.val) end)
+    end
+
+    local speedHint = Instance.new("TextLabel")
+    speedHint.Size = UDim2.new(1, -20, 0, 16)
+    speedHint.Position = UDim2.new(0, 10, 0, 62)
+    speedHint.BackgroundTransparency = 1
+    speedHint.Text = "Dica: Use 90-135 se o servidor puxar seu personagem de volta."
+    speedHint.TextColor3 = Palette.TextSecondary
+    speedHint.Font = Enum.Font.Gotham
+    speedHint.TextSize = 9
+    speedHint.TextXAlignment = Enum.TextXAlignment.Left
+    speedHint.Parent = speedCard
+
+    AddToggleCard(pageSettings, 2, "Anti-AFK Automático", "Evita desconexão após 20 min ocioso", "AntiAFK")
+
+    -- ABA 3: STATUS & BASE
+    local function CreateInfoBox(order, initialText, textColor)
+        local box = Instance.new("TextLabel")
+        box.Size = UDim2.new(1, 0, 0, 42)
+        box.BackgroundColor3 = Palette.BgCard
+        box.Text = initialText
+        box.TextColor3 = textColor or Palette.TextPrimary
+        box.Font = Enum.Font.GothamSemibold
+        box.TextSize = 11
+        box.TextWrapped = true
+        box.LayoutOrder = order
+        box.Parent = pageStatus
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+        Instance.new("UIStroke", box).Color = Palette.Stroke
+        return box
+    end
+
+    UIRefs.StatusText = CreateInfoBox(1, "Atividade: Inicializando...", Palette.Success)
+    UIRefs.BaseText = CreateInfoBox(2, "Base: Detectando terreno...", Palette.TextPrimary)
+    UIRefs.CounterText = CreateInfoBox(3, "Ciclos concluídos nesta sessão: 0", Palette.Accent)
+
+    local recalibrateBtn = Instance.new("TextButton")
+    recalibrateBtn.Size = UDim2.new(1, 0, 0, 38)
+    recalibrateBtn.BackgroundColor3 = Palette.Accent
+    recalibrateBtn.Text = "📍 Salvar Posição Atual como Minha Base"
+    recalibrateBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
+    recalibrateBtn.Font = Enum.Font.GothamBold
+    recalibrateBtn.TextSize = 12
+    recalibrateBtn.LayoutOrder = 4
+    recalibrateBtn.Parent = pageStatus
+    Instance.new("UICorner", recalibrateBtn).CornerRadius = UDim.new(0, 8)
+
+    recalibrateBtn.MouseButton1Click:Connect(function()
+        local _, hrp = GetCharacterParts()
+        if hrp then
+            HomeCFrame = hrp.CFrame
+            CachedBase = nil
+            FindMyBase()
+            UIRefs.BaseText.Text = "Base: Nova posição salva com sucesso!"
+        end
+    end)
+
+    -- Minimizar / Expandir
+    minBtn.MouseButton1Click:Connect(function()
+        miniPill.Position = mainFrame.Position
+        mainFrame.Visible = false
+        miniPill.Visible = true
+    end)
+
+    miniPill.MouseButton1Click:Connect(function()
+        mainFrame.Position = miniPill.Position
+        miniPill.Visible = false
+        mainFrame.Visible = true
+    end)
+
+    -- Encerrar Script
+    closeBtn.MouseButton1Click:Connect(function()
+        if _G.RoubeUmOvo_Cleanup then
+            _G.RoubeUmOvo_Cleanup()
+        end
+    end)
+
+    MakeDraggable(topBar, mainFrame)
+    MakeDraggable(miniPill, miniPill)
+    SelectTab("Missoes")
+end
+
 local function SetStatus(text)
     State.Status = text
-    if StatusLabelRef and StatusLabelRef.Parent then
-        StatusLabelRef.Text = "Status: " .. text
+    if UIRefs.StatusText and UIRefs.StatusText.Parent then
+        UIRefs.StatusText.Text = "Atividade: " .. text
     end
 end
 
-CreateMobileUI()
+local function IncrementActions()
+    State.ActionsCount = State.ActionsCount + 1
+    if UIRefs.CounterText and UIRefs.CounterText.Parent then
+        UIRefs.CounterText.Text = "Ciclos concluídos nesta sessão: " .. tostring(State.ActionsCount)
+    end
+end
+
+CreateProfessionalUI()
+
+--// ====================================================================
+--// MÓDULO 4: LOOPS DE EXECUÇÃO EM TEMPO REAL
+--// ====================================================================
 
 task.spawn(function()
     while State.Running do
         if State.AutoClaim then
             pcall(ClaimQuestsAndIndex)
+        end
+        if UIRefs.BaseText and UIRefs.BaseText.Parent then
+            local b = FindMyBase()
+            UIRefs.BaseText.Text = b and ("Base detectada: " .. b.Name) or "Base: Usando ponto de spawn salvo"
         end
         task.wait(3)
     end
@@ -561,8 +892,10 @@ task.spawn(function()
             if State.AutoEggs and IsCarryingEgg() then
                 local deliverCF = GetDeliverCFrame()
                 if deliverCF then
-                    SetStatus("Entregando ovo na base...")
-                    SmoothMoveTo(deliverCF)
+                    SetStatus("Entregando ovo no cercado...")
+                    if SmoothMoveTo(deliverCF) then
+                        IncrementActions()
+                    end
                     task.wait(0.35)
                 end
                 return
@@ -571,9 +904,10 @@ task.spawn(function()
             if State.AutoEvents then
                 local evObj, evPart = FindEventCollectible()
                 if evObj and evPart then
-                    SetStatus("Coletando item de evento...")
+                    SetStatus("Coletando evento: " .. evObj.Name)
                     if SmoothMoveTo(evPart.CFrame + Vector3.new(0, 2, 0)) then
                         InteractWithTarget(evObj)
+                        IncrementActions()
                         task.wait(0.2)
                     end
                     return
@@ -583,7 +917,7 @@ task.spawn(function()
             if State.AutoEggs then
                 local eggObj, eggPart = FindBestBiomeEgg()
                 if eggObj and eggPart then
-                    SetStatus("Indo para: " .. eggObj.Name)
+                    SetStatus("Roubando: " .. eggObj.Name)
                     if SmoothMoveTo(eggPart.CFrame + Vector3.new(0, 2.5, 0)) then
                         InteractWithTarget(eggObj)
                         task.wait(0.35)
@@ -595,20 +929,20 @@ task.spawn(function()
             if State.AutoTreadmill then
                 local tmCF = GetTreadmillCFrame()
                 if tmCF then
-                    SetStatus("Farmando velocidade na esteira...")
+                    SetStatus("Treinando na esteira...")
                     SmoothMoveTo(tmCF)
                     task.wait(1.5)
                     return
                 end
             end
 
-            SetStatus("Aguardando respawn de alvos...")
-            task.wait(1)
+            SetStatus("Aguardando respawn ou ativação...")
+            task.wait(0.8)
         end)
 
         if not success then
             SetStatus("Recuperando ciclo...")
-            warn("[RoubeUmOvo AutoMissões] Aviso capturado: " .. tostring(err))
+            warn("[RoubeUmOvo Pro] Aviso capturado: " .. tostring(err))
             task.wait(1)
         end
 
@@ -625,6 +959,6 @@ _G.RoubeUmOvo_Cleanup = function()
     for _, conn in ipairs(Connections) do
         pcall(function() conn:Disconnect() end)
     end
-    local ui = PlayerGui:FindFirstChild("RoubeUmOvo_AutoMissionUI")
+    local ui = PlayerGui:FindFirstChild("RoubeUmOvo_ProHub")
     if ui then ui:Destroy() end
 end
