@@ -1,6 +1,6 @@
 --// ====================================================================
---// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v3.0
---// Interface Hub Mobile com Abas, Switches Animados e Telemetria
+--// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v3.5
+--// Correção de Prioridade, Anti-Stuck e Speed Hack Real (WalkSpeed)
 --// ====================================================================
 
 if _G.RoubeUmOvo_Cleanup then
@@ -27,8 +27,10 @@ local State = {
     AutoTreadmill = (Config.AutoTreadmill ~= nil) and Config.AutoTreadmill or true,
     AutoClaim = (Config.AutoClaim ~= nil) and Config.AutoClaim or true,
     OnlyRarePlus = (Config.OnlyRarePlus ~= nil) and Config.OnlyRarePlus or false,
+    SpeedHack = true,
     AntiAFK = true,
-    MoveSpeed = Config.MoveSpeed or 135,
+    WalkSpeed = Config.WalkSpeed or 95,   -- Velocidade real de corrida (pernas/esteira)
+    TweenSpeed = Config.MoveSpeed or 145, -- Velocidade de deslocamento suave
     Status = "Pronto para iniciar",
     ActionsCount = 0
 }
@@ -37,6 +39,30 @@ local Connections = {}
 local ActiveTween = nil
 local HomeCFrame = nil
 local CachedBase = nil
+
+-- Controle anti-travamento para objetos inalcançáveis
+local TargetAttempts = {}
+local BlacklistedUntil = {}
+
+local function MarkAttempt(obj)
+    if not obj then return end
+    local count = (TargetAttempts[obj] or 0) + 1
+    TargetAttempts[obj] = count
+    if count >= 2 then
+        BlacklistedUntil[obj] = os.clock() + 30
+        TargetAttempts[obj] = 0
+    end
+end
+
+local function IsBlacklisted(obj)
+    local expiry = BlacklistedUntil[obj]
+    if not expiry then return false end
+    if os.clock() >= expiry then
+        BlacklistedUntil[obj] = nil
+        return false
+    end
+    return true
+end
 
 local function CaptureInitialSpawn()
     local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -48,7 +74,7 @@ end
 task.spawn(CaptureInitialSpawn)
 
 --// ====================================================================
---// MÓDULO 1: MOVIMENTAÇÃO E INTERAÇÃO SEGURA
+--// MÓDULO 1: SPEED HACK REAL, NOCLIP E MOVIMENTAÇÃO SEGURA
 --// ====================================================================
 
 local function GetCharacterParts()
@@ -56,6 +82,19 @@ local function GetCharacterParts()
     if not char then return nil, nil, nil end
     return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChildOfClass("Humanoid")
 end
+
+-- Mantém o WalkSpeed aplicado mesmo se o jogo tentar resetar para o padrão
+table.insert(Connections, RunService.Heartbeat:Connect(function()
+    if not State.Running then return end
+    local _, _, hum = GetCharacterParts()
+    if hum and hum.Health > 0 then
+        if State.SpeedHack then
+            if hum.WalkSpeed ~= State.WalkSpeed then
+                hum.WalkSpeed = State.WalkSpeed
+            end
+        end
+    end
+end))
 
 local NoClipEnabled = false
 table.insert(Connections, RunService.Stepped:Connect(function()
@@ -90,13 +129,13 @@ local function SmoothMoveTo(targetCFrame)
     end
 
     local distance = (hrp.Position - targetCFrame.Position).Magnitude
-    if distance <= 4 then
+    if distance <= 4.5 then
         hrp.CFrame = targetCFrame
         return true
     end
 
     NoClipEnabled = true
-    local duration = math.clamp(distance / State.MoveSpeed, 0.15, 12)
+    local duration = math.clamp(distance / State.TweenSpeed, 0.12, 10)
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 
     local completed = false
@@ -129,6 +168,7 @@ local function InteractWithTarget(instance)
     if not instance then return end
     local _, hrp = GetCharacterParts()
 
+    -- 1. Aciona ProximityPrompt se existir
     local prompt = instance:FindFirstChildWhichIsA("ProximityPrompt", true)
         or (instance.Parent and instance.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
 
@@ -142,24 +182,34 @@ local function InteractWithTarget(instance)
                 prompt:InputHoldEnd()
             end
         end)
-        return
     end
 
+    -- 2. Aciona ClickDetector se existir
     local clicker = instance:FindFirstChildWhichIsA("ClickDetector", true)
         or (instance.Parent and instance.Parent:FindFirstChildWhichIsA("ClickDetector", true))
 
     if clicker and fireclickdetector then
         pcall(function() fireclickdetector(clicker) end)
-        return
     end
 
-    local part = instance:IsA("BasePart") and instance or instance:FindFirstChildWhichIsA("BasePart", true)
-    if part and hrp and firetouchinterest then
-        pcall(function()
-            firetouchinterest(hrp, part, 0)
-            task.wait(0.05)
-            firetouchinterest(hrp, part, 1)
-        end)
+    -- 3. Simula toque físico em todas as partes do alvo
+    if hrp and firetouchinterest then
+        if instance:IsA("BasePart") then
+            pcall(function()
+                firetouchinterest(hrp, instance, 0)
+                task.wait(0.04)
+                firetouchinterest(hrp, instance, 1)
+            end)
+        end
+        for _, p in ipairs(instance:GetDescendants()) do
+            if p:IsA("BasePart") then
+                pcall(function()
+                    firetouchinterest(hrp, p, 0)
+                    task.wait(0.03)
+                    firetouchinterest(hrp, p, 1)
+                end)
+            end
+        end
     end
 end
 
@@ -290,19 +340,20 @@ local function FindBestBiomeEgg()
     local bestTarget, bestPart, bestPriority = nil, nil, -math.huge
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) then
+        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) and not IsBlacklisted(obj) then
             local n = obj.Name:lower()
-            if (n:find("egg") or n:find("ovo")) and not n:find("guardian") and not n:find("shop") and not n:find("ui") then
+            if (n:find("egg") or n:find("ovo")) and not n:find("guardian") and not n:find("shop") and not n:find("ui") and not n:find("machine") then
                 local rarity = GetRarityScore(n)
                 if not State.OnlyRarePlus or rarity >= 30 then
                     local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
                     if part and part.Transparency < 0.9 then
                         local hasPrompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true) ~= nil
-                        local hasTouch = part:FindFirstChildOfClass("TouchTransmitter") ~= nil
+                        local hasTouch = obj:FindFirstChildWhichIsA("TouchTransmitter", true) ~= nil or part:FindFirstChildOfClass("TouchTransmitter") ~= nil
                         local parentName = obj.Parent and obj.Parent.Name:lower() or ""
-                        if hasPrompt or hasTouch or parentName:find("egg") or parentName:find("nest") then
+                        if hasPrompt or hasTouch or parentName:find("egg") or parentName:find("nest") or parentName:find("spawn") then
                             local dist = (hrp.Position - part.Position).Magnitude
-                            local priority = (rarity * 15) - dist
+                            -- Prioriza distância próxima em contas novas + bônus moderado de raridade
+                            local priority = (rarity * 4) - dist
                             if priority > bestPriority then
                                 bestPriority = priority
                                 bestTarget = obj
@@ -329,7 +380,7 @@ local function FindEventCollectible()
     local closestObj, closestPart, minDist = nil, nil, math.huge
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) then
+        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) and not IsBlacklisted(obj) then
             local n = obj.Name:lower()
             for _, kw in ipairs(EventKeywords) do
                 if n:find(kw, 1, true) then
@@ -387,14 +438,15 @@ local function ClaimQuestsAndIndex()
 end
 
 --// ====================================================================
---// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v3.0)
+--// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v3.5)
 --// ====================================================================
 
 local UIRefs = {
     StatusText = nil,
     BaseText = nil,
     CounterText = nil,
-    SpeedValueText = nil
+    WalkSpeedText = nil,
+    TweenSpeedText = nil
 }
 
 local Palette = {
@@ -453,7 +505,6 @@ local function CreateProfessionalUI()
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.Parent = PlayerGui
 
-    -- Pílula flutuante quando minimizado
     local miniPill = Instance.new("TextButton")
     miniPill.Name = "MiniPill"
     miniPill.Size = UDim2.new(0, 145, 0, 36)
@@ -465,46 +516,31 @@ local function CreateProfessionalUI()
     miniPill.TextSize = 12
     miniPill.Visible = false
     miniPill.Parent = screenGui
-
-    local miniCorner = Instance.new("UICorner")
-    miniCorner.CornerRadius = UDim.new(1, 0)
-    miniCorner.Parent = miniPill
-
-    local miniStroke = Instance.new("UIStroke")
+    Instance.new("UICorner", miniPill).CornerRadius = UDim.new(1, 0)
+    local miniStroke = Instance.new("UIStroke", miniPill)
     miniStroke.Color = Palette.Accent
     miniStroke.Thickness = 1.5
-    miniStroke.Parent = miniPill
 
-    -- Janela Principal
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 285, 0, 336)
-    mainFrame.Position = UDim2.new(0.04, 0, 0.22, 0)
+    mainFrame.Size = UDim2.new(0, 290, 0, 355)
+    mainFrame.Position = UDim2.new(0.04, 0, 0.18, 0)
     mainFrame.BackgroundColor3 = Palette.BgMain
     mainFrame.BorderSizePixel = 0
     mainFrame.Active = true
     mainFrame.Parent = screenGui
-
-    local mainCorner = Instance.new("UICorner")
-    mainCorner.CornerRadius = UDim.new(0, 12)
-    mainCorner.Parent = mainFrame
-
-    local mainStroke = Instance.new("UIStroke")
+    Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+    local mainStroke = Instance.new("UIStroke", mainFrame)
     mainStroke.Color = Palette.Stroke
     mainStroke.Thickness = 1.5
-    mainStroke.Parent = mainFrame
 
-    -- Cabeçalho
     local topBar = Instance.new("Frame")
     topBar.Name = "TopBar"
     topBar.Size = UDim2.new(1, 0, 0, 40)
     topBar.BackgroundColor3 = Palette.BgHeader
     topBar.BorderSizePixel = 0
     topBar.Parent = mainFrame
-
-    local topCorner = Instance.new("UICorner")
-    topCorner.CornerRadius = UDim.new(0, 12)
-    topCorner.Parent = topBar
+    Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 12)
 
     local title = Instance.new("TextLabel")
     title.Size = UDim2.new(1, -85, 1, 0)
@@ -539,7 +575,6 @@ local function CreateProfessionalUI()
     closeBtn.Parent = topBar
     Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
-    -- Barra de Abas
     local tabBar = Instance.new("Frame")
     tabBar.Size = UDim2.new(1, -16, 0, 32)
     tabBar.Position = UDim2.new(0, 8, 0, 46)
@@ -555,7 +590,6 @@ local function CreateProfessionalUI()
     tabLayout.Padding = UDim.new(0, 4)
     tabLayout.Parent = tabBar
 
-    -- Container das Páginas
     local pageHolder = Instance.new("Frame")
     pageHolder.Size = UDim2.new(1, -16, 1, -88)
     pageHolder.Position = UDim2.new(0, 8, 0, 84)
@@ -616,28 +650,23 @@ local function CreateProfessionalUI()
     end
 
     AddTabButton("Missoes", "🎯 Missões")
-    AddTabButton("Ajustes", "⚡ Ajustes")
+    AddTabButton("Ajustes", "⚡ Speed")
     AddTabButton("Status", "📊 Status")
 
-    -- Construtor de Switch Animado Profissional
-    local function AddToggleCard(parentPage, order, titleText, subtitleText, stateKey)
+    local function AddToggleCard(parentPage, order, titleText, subtitleText, stateKey, onChanged)
         local card = Instance.new("TextButton")
-        card.Size = UDim2.new(1, 0, 0, 42)
+        card.Size = UDim2.new(1, 0, 0, 44)
         card.BackgroundColor3 = Palette.BgCard
         card.Text = ""
         card.AutoButtonColor = false
         card.LayoutOrder = order
         card.Parent = parentPage
         Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-
-        local cardStroke = Instance.new("UIStroke")
-        cardStroke.Color = Palette.Stroke
-        cardStroke.Thickness = 1
-        cardStroke.Parent = card
+        Instance.new("UIStroke", card).Color = Palette.Stroke
 
         local lblTitle = Instance.new("TextLabel")
         lblTitle.Size = UDim2.new(1, -64, 0, 18)
-        lblTitle.Position = UDim2.new(0, 10, 0, 5)
+        lblTitle.Position = UDim2.new(0, 10, 0, 6)
         lblTitle.BackgroundTransparency = 1
         lblTitle.Text = titleText
         lblTitle.TextColor3 = Palette.TextPrimary
@@ -648,7 +677,7 @@ local function CreateProfessionalUI()
 
         local lblSub = Instance.new("TextLabel")
         lblSub.Size = UDim2.new(1, -64, 0, 14)
-        lblSub.Position = UDim2.new(0, 10, 0, 23)
+        lblSub.Position = UDim2.new(0, 10, 0, 24)
         lblSub.BackgroundTransparency = 1
         lblSub.Text = subtitleText
         lblSub.TextColor3 = Palette.TextSecondary
@@ -657,7 +686,6 @@ local function CreateProfessionalUI()
         lblSub.TextXAlignment = Enum.TextXAlignment.Left
         lblSub.Parent = card
 
-        -- Pílula do Switch
         local switchBg = Instance.new("Frame")
         switchBg.Size = UDim2.new(0, 42, 0, 22)
         switchBg.Position = UDim2.new(1, -52, 0.5, -11)
@@ -687,6 +715,9 @@ local function CreateProfessionalUI()
         card.MouseButton1Click:Connect(function()
             State[stateKey] = not State[stateKey]
             RefreshVisual()
+            if onChanged then
+                pcall(onChanged, State[stateKey])
+            end
         end)
     end
 
@@ -695,94 +726,115 @@ local function CreateProfessionalUI()
     AddToggleCard(pageMissions, 2, "Auto Itens de Evento", "Pega borboletas, sparks, penas e tokens", "AutoEvents")
     AddToggleCard(pageMissions, 3, "Auto Esteira (Speed)", "Treina velocidade enquanto aguarda ninhos", "AutoTreadmill")
     AddToggleCard(pageMissions, 4, "Auto Resgatar Missões", "Coleta recompensas de Quests e Pet Index", "AutoClaim")
-    AddToggleCard(pageMissions, 5, "Apenas Ovos Rare+", "Ignora ovos Common e Uncommon", "OnlyRarePlus")
+    AddToggleCard(pageMissions, 5, "Apenas Ovos Rare+", "Desligue em conta nova para pegar comuns", "OnlyRarePlus")
 
-    -- ABA 2: AJUSTES (Velocidade e Anti-AFK)
-    local speedCard = Instance.new("Frame")
-    speedCard.Size = UDim2.new(1, 0, 0, 84)
-    speedCard.BackgroundColor3 = Palette.BgCard
-    speedCard.LayoutOrder = 1
-    speedCard.Parent = pageSettings
-    Instance.new("UICorner", speedCard).CornerRadius = UDim.new(0, 8)
-    Instance.new("UIStroke", speedCard).Color = Palette.Stroke
+    -- ABA 2: SPEED & AJUSTES
+    AddToggleCard(pageSettings, 1, "Ativar Speed Hack (Corrida)", "Aumenta velocidade real ao correr e na esteira", "SpeedHack", function(isOn)
+        local _, _, hum = GetCharacterParts()
+        if hum and not isOn then
+            hum.WalkSpeed = 16
+        end
+    end)
 
-    local speedTitle = Instance.new("TextLabel")
-    speedTitle.Size = UDim2.new(1, -20, 0, 20)
-    speedTitle.Position = UDim2.new(0, 10, 0, 6)
-    speedTitle.BackgroundTransparency = 1
-    speedTitle.Text = "Velocidade de Deslocamento: " .. tostring(State.MoveSpeed)
-    speedTitle.TextColor3 = Palette.TextPrimary
-    speedTitle.Font = Enum.Font.GothamSemibold
-    speedTitle.TextSize = 12
-    speedTitle.TextXAlignment = Enum.TextXAlignment.Left
-    speedTitle.Parent = speedCard
-    UIRefs.SpeedValueText = speedTitle
+    -- Card 1: Velocidade Real de Corrida (WalkSpeed)
+    local walkCard = Instance.new("Frame")
+    walkCard.Size = UDim2.new(1, 0, 0, 68)
+    walkCard.BackgroundColor3 = Palette.BgCard
+    walkCard.LayoutOrder = 2
+    walkCard.Parent = pageSettings
+    Instance.new("UICorner", walkCard).CornerRadius = UDim.new(0, 8)
+    Instance.new("UIStroke", walkCard).Color = Palette.Stroke
 
-    local function UpdateSpeed(newVal)
-        State.MoveSpeed = math.clamp(newVal, 60, 240)
-        speedTitle.Text = "Velocidade de Deslocamento: " .. tostring(State.MoveSpeed)
+    local walkTitle = Instance.new("TextLabel")
+    walkTitle.Size = UDim2.new(1, -20, 0, 20)
+    walkTitle.Position = UDim2.new(0, 10, 0, 6)
+    walkTitle.BackgroundTransparency = 1
+    walkTitle.Text = "Velocidade de Corrida (WalkSpeed): " .. tostring(State.WalkSpeed)
+    walkTitle.TextColor3 = Palette.TextPrimary
+    walkTitle.Font = Enum.Font.GothamSemibold
+    walkTitle.TextSize = 11
+    walkTitle.TextXAlignment = Enum.TextXAlignment.Left
+    walkTitle.Parent = walkCard
+
+    local function UpdateWalkSpeed(newVal)
+        State.WalkSpeed = math.clamp(newVal, 16, 300)
+        walkTitle.Text = "Velocidade de Corrida (WalkSpeed): " .. tostring(State.WalkSpeed)
     end
 
-    local btnMinus = Instance.new("TextButton")
-    btnMinus.Size = UDim2.new(0, 36, 0, 26)
-    btnMinus.Position = UDim2.new(0, 10, 0, 30)
-    btnMinus.BackgroundColor3 = Palette.BgCardHover
-    btnMinus.Text = "-15"
-    btnMinus.TextColor3 = Palette.TextPrimary
-    btnMinus.Font = Enum.Font.GothamBold
-    btnMinus.TextSize = 11
-    btnMinus.Parent = speedCard
-    Instance.new("UICorner", btnMinus).CornerRadius = UDim.new(0, 6)
-    btnMinus.MouseButton1Click:Connect(function() UpdateSpeed(State.MoveSpeed - 15) end)
-
-    local btnPlus = Instance.new("TextButton")
-    btnPlus.Size = UDim2.new(0, 36, 0, 26)
-    btnPlus.Position = UDim2.new(0, 52, 0, 30)
-    btnPlus.BackgroundColor3 = Palette.BgCardHover
-    btnPlus.Text = "+15"
-    btnPlus.TextColor3 = Palette.TextPrimary
-    btnPlus.Font = Enum.Font.GothamBold
-    btnPlus.TextSize = 11
-    btnPlus.Parent = speedCard
-    Instance.new("UICorner", btnPlus).CornerRadius = UDim.new(0, 6)
-    btnPlus.MouseButton1Click:Connect(function() UpdateSpeed(State.MoveSpeed + 15) end)
-
-    local presets = {
-        { label = "Seguro (90)", val = 90, x = 96 },
-        { label = "Padrão (135)", val = 135, x = 156 },
-        { label = "Turbo (195)", val = 195, x = 216 }
+    local wButtons = {
+        { txt = "-15", x = 10, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed - 15) end, col = Palette.TextPrimary },
+        { txt = "+15", x = 50, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed + 15) end, col = Palette.TextPrimary },
+        { txt = "50",  x = 94, w = 40, act = function() UpdateWalkSpeed(50) end, col = Palette.Accent },
+        { txt = "95",  x = 138, w = 40, act = function() UpdateWalkSpeed(95) end, col = Palette.Accent },
+        { txt = "150", x = 182, w = 42, act = function() UpdateWalkSpeed(150) end, col = Palette.Accent },
+        { txt = "220", x = 228, w = 42, act = function() UpdateWalkSpeed(220) end, col = Palette.Success }
     }
-    for _, p in ipairs(presets) do
-        local pBtn = Instance.new("TextButton")
-        pBtn.Size = UDim2.new(0, 54, 0, 26)
-        pBtn.Position = UDim2.new(0, p.x - 4, 0, 30)
-        pBtn.BackgroundColor3 = Palette.BgHeader
-        pBtn.Text = tostring(p.val)
-        pBtn.TextColor3 = Palette.Accent
-        pBtn.Font = Enum.Font.GothamBold
-        pBtn.TextSize = 11
-        pBtn.Parent = speedCard
-        Instance.new("UICorner", pBtn).CornerRadius = UDim.new(0, 6)
-        pBtn.MouseButton1Click:Connect(function() UpdateSpeed(p.val) end)
+    for _, b in ipairs(wButtons) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, b.w, 0, 28)
+        btn.Position = UDim2.new(0, b.x, 0, 30)
+        btn.BackgroundColor3 = Palette.BgHeader
+        btn.Text = b.txt
+        btn.TextColor3 = b.col
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.Parent = walkCard
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+        btn.MouseButton1Click:Connect(b.act)
     end
 
-    local speedHint = Instance.new("TextLabel")
-    speedHint.Size = UDim2.new(1, -20, 0, 16)
-    speedHint.Position = UDim2.new(0, 10, 0, 62)
-    speedHint.BackgroundTransparency = 1
-    speedHint.Text = "Dica: Use 90-135 se o servidor puxar seu personagem de volta."
-    speedHint.TextColor3 = Palette.TextSecondary
-    speedHint.Font = Enum.Font.Gotham
-    speedHint.TextSize = 9
-    speedHint.TextXAlignment = Enum.TextXAlignment.Left
-    speedHint.Parent = speedCard
+    -- Card 2: Velocidade de Teleporte Suave (Tween)
+    local tweenCard = Instance.new("Frame")
+    tweenCard.Size = UDim2.new(1, 0, 0, 68)
+    tweenCard.BackgroundColor3 = Palette.BgCard
+    tweenCard.LayoutOrder = 3
+    tweenCard.Parent = pageSettings
+    Instance.new("UICorner", tweenCard).CornerRadius = UDim.new(0, 8)
+    Instance.new("UIStroke", tweenCard).Color = Palette.Stroke
 
-    AddToggleCard(pageSettings, 2, "Anti-AFK Automático", "Evita desconexão após 20 min ocioso", "AntiAFK")
+    local tweenTitle = Instance.new("TextLabel")
+    tweenTitle.Size = UDim2.new(1, -20, 0, 20)
+    tweenTitle.Position = UDim2.new(0, 10, 0, 6)
+    tweenTitle.BackgroundTransparency = 1
+    tweenTitle.Text = "Velocidade do Auto Farm (Voo): " .. tostring(State.TweenSpeed)
+    tweenTitle.TextColor3 = Palette.TextPrimary
+    tweenTitle.Font = Enum.Font.GothamSemibold
+    tweenTitle.TextSize = 11
+    tweenTitle.TextXAlignment = Enum.TextXAlignment.Left
+    tweenTitle.Parent = tweenCard
+
+    local function UpdateTweenSpeed(newVal)
+        State.TweenSpeed = math.clamp(newVal, 60, 250)
+        tweenTitle.Text = "Velocidade do Auto Farm (Voo): " .. tostring(State.TweenSpeed)
+    end
+
+    local tButtons = {
+        { txt = "-15", x = 10, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed - 15) end, col = Palette.TextPrimary },
+        { txt = "+15", x = 50, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed + 15) end, col = Palette.TextPrimary },
+        { txt = "90",  x = 94, w = 54, act = function() UpdateTweenSpeed(90) end, col = Palette.Accent },
+        { txt = "145", x = 154, w = 54, act = function() UpdateTweenSpeed(145) end, col = Palette.Accent },
+        { txt = "200", x = 214, w = 56, act = function() UpdateTweenSpeed(200) end, col = Palette.Success }
+    }
+    for _, b in ipairs(tButtons) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, b.w, 0, 28)
+        btn.Position = UDim2.new(0, b.x, 0, 30)
+        btn.BackgroundColor3 = Palette.BgHeader
+        btn.Text = b.txt
+        btn.TextColor3 = b.col
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.Parent = tweenCard
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+        btn.MouseButton1Click:Connect(b.act)
+    end
+
+    AddToggleCard(pageSettings, 4, "Anti-AFK Automático", "Evita desconexão após 20 min ocioso", "AntiAFK")
 
     -- ABA 3: STATUS & BASE
     local function CreateInfoBox(order, initialText, textColor)
         local box = Instance.new("TextLabel")
-        box.Size = UDim2.new(1, 0, 0, 42)
+        box.Size = UDim2.new(1, 0, 0, 44)
         box.BackgroundColor3 = Palette.BgCard
         box.Text = initialText
         box.TextColor3 = textColor or Palette.TextPrimary
@@ -798,10 +850,10 @@ local function CreateProfessionalUI()
 
     UIRefs.StatusText = CreateInfoBox(1, "Atividade: Inicializando...", Palette.Success)
     UIRefs.BaseText = CreateInfoBox(2, "Base: Detectando terreno...", Palette.TextPrimary)
-    UIRefs.CounterText = CreateInfoBox(3, "Ciclos concluídos nesta sessão: 0", Palette.Accent)
+    UIRefs.CounterText = CreateInfoBox(3, "Entregas/Coletas concluídas: 0", Palette.Accent)
 
     local recalibrateBtn = Instance.new("TextButton")
-    recalibrateBtn.Size = UDim2.new(1, 0, 0, 38)
+    recalibrateBtn.Size = UDim2.new(1, 0, 0, 40)
     recalibrateBtn.BackgroundColor3 = Palette.Accent
     recalibrateBtn.Text = "📍 Salvar Posição Atual como Minha Base"
     recalibrateBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
@@ -821,7 +873,6 @@ local function CreateProfessionalUI()
         end
     end)
 
-    -- Minimizar / Expandir
     minBtn.MouseButton1Click:Connect(function()
         miniPill.Position = mainFrame.Position
         mainFrame.Visible = false
@@ -834,7 +885,6 @@ local function CreateProfessionalUI()
         mainFrame.Visible = true
     end)
 
-    -- Encerrar Script
     closeBtn.MouseButton1Click:Connect(function()
         if _G.RoubeUmOvo_Cleanup then
             _G.RoubeUmOvo_Cleanup()
@@ -856,14 +906,14 @@ end
 local function IncrementActions()
     State.ActionsCount = State.ActionsCount + 1
     if UIRefs.CounterText and UIRefs.CounterText.Parent then
-        UIRefs.CounterText.Text = "Ciclos concluídos nesta sessão: " .. tostring(State.ActionsCount)
+        UIRefs.CounterText.Text = "Entregas/Coletas concluídas: " .. tostring(State.ActionsCount)
     end
 end
 
 CreateProfessionalUI()
 
 --// ====================================================================
---// MÓDULO 4: LOOPS DE EXECUÇÃO EM TEMPO REAL
+--// MÓDULO 4: LOOPS DE EXECUÇÃO COM PRIORIDADE CORRIGIDA
 --// ====================================================================
 
 task.spawn(function()
@@ -889,6 +939,7 @@ task.spawn(function()
                 return
             end
 
+            -- 1. Se já estiver carregando um ovo, entrega na base imediatamente
             if State.AutoEggs and IsCarryingEgg() then
                 local deliverCF = GetDeliverCFrame()
                 if deliverCF then
@@ -901,19 +952,7 @@ task.spawn(function()
                 return
             end
 
-            if State.AutoEvents then
-                local evObj, evPart = FindEventCollectible()
-                if evObj and evPart then
-                    SetStatus("Coletando evento: " .. evObj.Name)
-                    if SmoothMoveTo(evPart.CFrame + Vector3.new(0, 2, 0)) then
-                        InteractWithTarget(evObj)
-                        IncrementActions()
-                        task.wait(0.2)
-                    end
-                    return
-                end
-            end
-
+            -- 2. Prioridade Principal: Roubar o ovo mais próximo/melhor
             if State.AutoEggs then
                 local eggObj, eggPart = FindBestBiomeEgg()
                 if eggObj and eggPart then
@@ -921,22 +960,42 @@ task.spawn(function()
                     if SmoothMoveTo(eggPart.CFrame + Vector3.new(0, 2.5, 0)) then
                         InteractWithTarget(eggObj)
                         task.wait(0.35)
+                        if not IsCarryingEgg() then
+                            MarkAttempt(eggObj)
+                        else
+                            TargetAttempts[eggObj] = 0
+                        end
                     end
                     return
                 end
             end
 
-            if State.AutoTreadmill then
-                local tmCF = GetTreadmillCFrame()
-                if tmCF then
-                    SetStatus("Treinando na esteira...")
-                    SmoothMoveTo(tmCF)
-                    task.wait(1.5)
+            -- 3. Coletar itens de evento (ignora se falhar 2x seguidas)
+            if State.AutoEvents then
+                local evObj, evPart = FindEventCollectible()
+                if evObj and evPart then
+                    SetStatus("Coletando evento: " .. evObj.Name)
+                    if SmoothMoveTo(evPart.CFrame + Vector3.new(0, 2, 0)) then
+                        InteractWithTarget(evObj)
+                        MarkAttempt(evObj)
+                        task.wait(0.25)
+                    end
                     return
                 end
             end
 
-            SetStatus("Aguardando respawn ou ativação...")
+            -- 4. Treinar na esteira com o WalkSpeed turbinado
+            if State.AutoTreadmill then
+                local tmCF = GetTreadmillCFrame()
+                if tmCF then
+                    SetStatus("Correndo na esteira (Speed " .. State.WalkSpeed .. ")...")
+                    SmoothMoveTo(tmCF)
+                    task.wait(1.2)
+                    return
+                end
+            end
+
+            SetStatus("Aguardando respawn de ovos...")
             task.wait(0.8)
         end)
 
@@ -953,6 +1012,10 @@ end)
 _G.RoubeUmOvo_Cleanup = function()
     State.Running = false
     NoClipEnabled = false
+    local _, _, hum = GetCharacterParts()
+    if hum then
+        pcall(function() hum.WalkSpeed = 16 end)
+    end
     if ActiveTween then
         pcall(function() ActiveTween:Cancel() end)
     end
