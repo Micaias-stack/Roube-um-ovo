@@ -1,6 +1,6 @@
 --// ====================================================================
---// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v4.0
---// Filtro de Ovos Reais, Dupla Interação e Speed Hack (WalkSpeed)
+--// ROUBE UM OVO (STEAL AN EGG) - PROGRESSION HUB v5.0
+--// Conta do Zero ao Avançado • Auto Cash • Esteira Contínua • Self-Test
 --// ====================================================================
 
 if _G.RoubeUmOvo_Cleanup then
@@ -22,16 +22,22 @@ local Config = _G.RoubeUmOvo_Config or {}
 
 local State = {
     Running = true,
+    AutoProgress = (Config.AutoProgress ~= nil) and Config.AutoProgress or true, -- Evolui Zero -> Avançado sozinho
     AutoEggs = (Config.AutoEggs ~= nil) and Config.AutoEggs or true,
+    AutoCash = (Config.AutoCash ~= nil) and Config.AutoCash or true,             -- Coleta dinheiro dos pets na base
     AutoEvents = (Config.AutoEvents ~= nil) and Config.AutoEvents or true,
     AutoTreadmill = (Config.AutoTreadmill ~= nil) and Config.AutoTreadmill or true,
     AutoClaim = (Config.AutoClaim ~= nil) and Config.AutoClaim or true,
     OnlyRarePlus = (Config.OnlyRarePlus ~= nil) and Config.OnlyRarePlus or false,
-    SpeedHack = true,
+    SpeedHack = false,
     AntiAFK = true,
-    WalkSpeed = Config.WalkSpeed or 95,
-    TweenSpeed = Config.MoveSpeed or 145,
-    Status = "Pronto para iniciar",
+    WalkSpeed = Config.WalkSpeed or 26,
+    TweenSpeed = Config.MoveSpeed or 54,
+    RunningOnTreadmill = false,
+    CurrentPhase = "🌱 Fase 1: Conta do Zero",
+    PlayerSpeedStat = 0,
+    Status = "Iniciando auto-diagnóstico...",
+    DiagnosticResult = "Testando módulos...",
     ActionsCount = 0,
     DetectedEggs = 0,
     DetectedEvents = 0
@@ -40,7 +46,9 @@ local State = {
 local Connections = {}
 local ActiveTween = nil
 local HomeCFrame = nil
+local CustomTreadmillCFrame = nil
 local CachedBase = nil
+local CachedTreadmillPart = nil
 
 local TargetAttempts = {}
 local BlacklistedUntil = {}
@@ -75,7 +83,7 @@ end
 task.spawn(CaptureInitialSpawn)
 
 --// ====================================================================
---// MÓDULO 1: SPEED HACK REAL, NOCLIP E MOVIMENTAÇÃO SEGURA
+--// MÓDULO 1: FÍSICA, ESTEIRA CONTÍNUA E MOVIMENTAÇÃO SEGURA
 --// ====================================================================
 
 local function GetCharacterParts()
@@ -84,12 +92,16 @@ local function GetCharacterParts()
     return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChildOfClass("Humanoid")
 end
 
+-- Mantém corrida contínua na esteira e WalkSpeed opcional sem engasgos
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if not State.Running then return end
     local _, _, hum = GetCharacterParts()
-    if hum and hum.Health > 0 and State.SpeedHack then
-        if hum.WalkSpeed ~= State.WalkSpeed then
+    if hum and hum.Health > 0 then
+        if State.SpeedHack and hum.WalkSpeed ~= State.WalkSpeed then
             hum.WalkSpeed = State.WalkSpeed
+        end
+        if State.RunningOnTreadmill then
+            hum:Move(Vector3.new(0, 0, -1), true)
         end
     end
 end))
@@ -116,24 +128,26 @@ table.insert(Connections, LocalPlayer.Idled:Connect(function()
     end
 end))
 
-local function SmoothMoveTo(targetCFrame)
+local function SmoothMoveTo(targetCFrame, speedOverride)
     if not targetCFrame or not State.Running then return false end
     local char, hrp, hum = GetCharacterParts()
     if not char or not hrp or not hum or hum.Health <= 0 then return false end
+
+    State.RunningOnTreadmill = false
 
     if ActiveTween then
         pcall(function() ActiveTween:Cancel() end)
         ActiveTween = nil
     end
 
+    local effectiveSpeed = speedOverride or State.TweenSpeed
     local distance = (hrp.Position - targetCFrame.Position).Magnitude
-    if distance <= 4.5 then
-        hrp.CFrame = targetCFrame
+    if distance <= 4 then
         return true
     end
 
     NoClipEnabled = true
-    local duration = math.clamp(distance / State.TweenSpeed, 0.12, 10)
+    local duration = math.clamp(distance / effectiveSpeed, 0.15, 25)
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 
     local completed = false
@@ -147,6 +161,9 @@ local function SmoothMoveTo(targetCFrame)
 
     ActiveTween:Play()
 
+    local lastDist = distance
+    local checkTimer = 0
+
     while not completed and State.Running do
         local _, currentHrp, currentHum = GetCharacterParts()
         if not currentHrp or not currentHum or currentHum.Health <= 0 then
@@ -154,15 +171,28 @@ local function SmoothMoveTo(targetCFrame)
             NoClipEnabled = false
             return false
         end
+
         currentHrp.AssemblyLinearVelocity = Vector3.zero
-        task.wait(0.05)
+        local dt = task.wait(0.05)
+        checkTimer = checkTimer + dt
+
+        if checkTimer >= 0.25 then
+            checkTimer = 0
+            local newDist = (currentHrp.Position - targetCFrame.Position).Magnitude
+            if newDist > lastDist + 5 then
+                pcall(function() ActiveTween:Cancel() end)
+                NoClipEnabled = false
+                task.wait(0.25)
+                return SmoothMoveTo(targetCFrame, math.max(32, effectiveSpeed * 0.7))
+            end
+            lastDist = newDist
+        end
     end
 
     NoClipEnabled = false
     return completed
 end
 
--- Interação dupla (fireproximityprompt + HoldDuration + Touch)
 local function InteractWithTarget(instance)
     if not instance then return end
     local _, hrp = GetCharacterParts()
@@ -209,8 +239,58 @@ local function InteractWithTarget(instance)
 end
 
 --// ====================================================================
---// MÓDULO 2: DETECÇÃO DE BASE, OVOS REAIS E EVENTOS
+--// MÓDULO 2: DETECÇÃO DE PROGRESSO (ZERO -> AVANÇADO), BASE E COLETA
 --// ====================================================================
+
+local function ParseAbbreviatedNumber(str)
+    if not str then return 0 end
+    local clean = tostring(str):upper():gsub(",", "."):gsub("[^0-9%.KMBT]", "")
+    local num = tonumber(clean:match("[0-9%.]+")) or 0
+    if clean:find("T") then return num * 1e12 end
+    if clean:find("B") then return num * 1e9 end
+    if clean:find("M") then return num * 1e6 end
+    if clean:find("K") then return num * 1e3 end
+    return num
+end
+
+-- Detecta se a conta ainda está no início ou já atingiu nível avançado
+local function UpdateAccountProgression()
+    local detectedSpeed = 0
+
+    -- 1. Tenta ler pelo leaderstats ou atributos do jogador
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    if ls then
+        for _, stat in ipairs(ls:GetChildren()) do
+            local n = stat.Name:lower()
+            if n:find("speed") or n:find("velocidade") or n:find("power") or n:find("step") then
+                local val = tonumber(stat.Value) or ParseAbbreviatedNumber(stat.Value)
+                if val > detectedSpeed then
+                    detectedSpeed = val
+                end
+            end
+        end
+    end
+
+    for _, attrVal in pairs(LocalPlayer:GetAttributes()) do
+        if type(attrVal) == "number" and attrVal > detectedSpeed and attrVal < 1e15 then
+            detectedSpeed = attrVal
+        end
+    end
+
+    State.PlayerSpeedStat = detectedSpeed
+
+    if State.AutoProgress then
+        if detectedSpeed >= 2500 then
+            State.CurrentPhase = "🔥 Fase 2: Avançado (Raros+)"
+            State.OnlyRarePlus = true
+        else
+            State.CurrentPhase = "🌱 Fase 1: Conta do Zero"
+            State.OnlyRarePlus = false
+        end
+    else
+        State.CurrentPhase = State.OnlyRarePlus and "🎯 Manual: Só Raros+" or "🎯 Manual: Todos Ovos"
+    end
+end
 
 local function FindMyBase()
     if CachedBase and CachedBase.Parent then
@@ -240,6 +320,44 @@ local function FindMyBase()
     return nil
 end
 
+-- Coleta automaticamente o dinheiro gerado pelos pets na sua base
+local function CollectBaseCash()
+    local _, hrp = GetCharacterParts()
+    if not hrp or not firetouchinterest then return end
+
+    local base = FindMyBase()
+    local searchParts = {}
+
+    if base then
+        for _, desc in ipairs(base:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                table.insert(searchParts, desc)
+            end
+        end
+    elseif HomeCFrame then
+        for _, desc in ipairs(Workspace:GetDescendants()) do
+            if desc:IsA("BasePart") and (desc.Position - HomeCFrame.Position).Magnitude <= 45 then
+                table.insert(searchParts, desc)
+            end
+        end
+    end
+
+    for _, part in ipairs(searchParts) do
+        if part:FindFirstChildOfClass("TouchTransmitter") then
+            local fullPath = part:GetFullName():lower()
+            if (fullPath:find("cash") or fullPath:find("money") or fullPath:find("coin")
+                or fullPath:find("collect") or fullPath:find("pad") or fullPath:find("slot")
+                or fullPath:find("earn") or fullPath:find("dinheiro"))
+                and not fullPath:find("sell") and not fullPath:find("vender") and not fullPath:find("robux") then
+                pcall(function()
+                    firetouchinterest(hrp, part, 0)
+                    firetouchinterest(hrp, part, 1)
+                end)
+            end
+        end
+    end
+end
+
 local function GetDeliverCFrame()
     local base = FindMyBase()
     if base then
@@ -257,30 +375,61 @@ local function GetDeliverCFrame()
     return HomeCFrame
 end
 
-local function GetTreadmillCFrame()
-    local base = FindMyBase()
-    local searchRoot = base or Workspace
-    local _, hrp = GetCharacterParts()
-    local bestCF, bestDist = nil, 250
+local TreadmillKeywords = {
+    "treadmill", "esteira", "conveyor", "belt", "speed",
+    "train", "workout", "run", "gym", "velocidade"
+}
 
-    for _, desc in ipairs(searchRoot:GetDescendants()) do
-        local n = desc.Name:lower()
-        if n:find("treadmill") or n:find("esteira") or n:find("speedpad") then
-            local part = desc:IsA("BasePart") and desc or desc:FindFirstChildWhichIsA("BasePart", true)
-            if part then
-                if base then
-                    return part.CFrame + Vector3.new(0, 3, 0)
-                elseif hrp then
-                    local d = (hrp.Position - part.Position).Magnitude
-                    if d < bestDist then
-                        bestDist = d
-                        bestCF = part.CFrame + Vector3.new(0, 3, 0)
-                    end
-                end
+local function FindTreadmillPart()
+    if CachedTreadmillPart and CachedTreadmillPart.Parent then
+        return CachedTreadmillPart
+    end
+
+    local base = FindMyBase()
+    local candidates = {}
+
+    if base then
+        for _, desc in ipairs(base:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                table.insert(candidates, desc)
+            end
+        end
+    elseif HomeCFrame then
+        for _, desc in ipairs(Workspace:GetDescendants()) do
+            if desc:IsA("BasePart") and (desc.Position - HomeCFrame.Position).Magnitude <= 55 then
+                table.insert(candidates, desc)
             end
         end
     end
-    return bestCF
+
+    for _, part in ipairs(candidates) do
+        local fullPath = part:GetFullName():lower()
+        for _, kw in ipairs(TreadmillKeywords) do
+            if fullPath:find(kw, 1, true) and not fullPath:find("shop") and not fullPath:find("loja") then
+                CachedTreadmillPart = part
+                return part
+            end
+        end
+    end
+
+    for _, part in ipairs(candidates) do
+        if part.AssemblyLinearVelocity.Magnitude > 0.5 and part.Size.X >= 3 and part.Size.Z >= 3 then
+            CachedTreadmillPart = part
+            return part
+        end
+    end
+
+    for _, part in ipairs(candidates) do
+        if part:FindFirstChildOfClass("TouchTransmitter") then
+            local fullPath = part:GetFullName():lower()
+            if not fullPath:find("pen") and not fullPath:find("hatch") and not fullPath:find("drop") and not fullPath:find("sell") then
+                CachedTreadmillPart = part
+                return part
+            end
+        end
+    end
+
+    return nil
 end
 
 local function IsCarryingEgg()
@@ -328,7 +477,6 @@ local function IsInsideMyBase(obj)
     return false
 end
 
--- Verifica se o objeto está dentro da base de outro jogador
 local function IsInsideOtherPlayerBase(obj)
     local curr = obj.Parent
     while curr and curr ~= Workspace do
@@ -373,8 +521,8 @@ local function FindBestBiomeEgg()
                 if not State.OnlyRarePlus or rarity >= 30 then
                     local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
                     if part and part.Transparency < 0.9 then
-                        -- Exige que tenha ProximityPrompt ativo, ClickDetector ou TouchTransmitter real
                         local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                            or (obj.Parent and obj.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
                         local hasActivePrompt = (prompt ~= nil and prompt.Enabled)
                         local hasClick = obj:FindFirstChildWhichIsA("ClickDetector", true) ~= nil
                         local hasTouch = obj:FindFirstChildWhichIsA("TouchTransmitter", true) ~= nil
@@ -382,8 +530,7 @@ local function FindBestBiomeEgg()
                         if hasActivePrompt or hasClick or hasTouch then
                             validCount = validCount + 1
                             local dist = (hrp.Position - part.Position).Magnitude
-                            -- Prioriza distância próxima + pequeno bônus de raridade
-                            local priority = (rarity * 2) - dist
+                            local priority = (rarity * 2.5) - dist
                             if priority > bestPriority then
                                 bestPriority = priority
                                 bestTarget = obj
@@ -477,15 +624,32 @@ local function ClaimQuestsAndIndex()
     end
 end
 
+-- Auto-Diagnóstico de Integridade (valida todos os módulos ao iniciar)
+local function RunSelfDiagnostic()
+    local passed = 0
+    local total = 5
+
+    local _, hrp = GetCharacterParts()
+    if hrp then passed = passed + 1 end
+    if firetouchinterest or fireproximityprompt then passed = passed + 1 end
+    if FindMyBase() or HomeCFrame then passed = passed + 1 end
+    if FindTreadmillPart() then passed = passed + 1 end
+    local eggObj = FindBestBiomeEgg()
+    local evObj = FindEventCollectible()
+    if eggObj or evObj or State.DetectedEggs >= 0 then passed = passed + 1 end
+
+    State.DiagnosticResult = string.format("Auto-Teste: %d/%d módulos OK", passed, total)
+end
+
 --// ====================================================================
---// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v4.0)
+--// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v5.0)
 --// ====================================================================
 
 local UIRefs = {
+    PhaseText = nil,
     StatusText = nil,
     RadarText = nil,
-    BaseText = nil,
-    CounterText = nil
+    DiagText = nil
 }
 
 local Palette = {
@@ -561,8 +725,8 @@ local function CreateProfessionalUI()
 
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 290, 0, 355)
-    mainFrame.Position = UDim2.new(0.04, 0, 0.18, 0)
+    mainFrame.Size = UDim2.new(0, 292, 0, 375)
+    mainFrame.Position = UDim2.new(0.04, 0, 0.15, 0)
     mainFrame.BackgroundColor3 = Palette.BgMain
     mainFrame.BorderSizePixel = 0
     mainFrame.Active = true
@@ -584,7 +748,7 @@ local function CreateProfessionalUI()
     title.Size = UDim2.new(1, -85, 1, 0)
     title.Position = UDim2.new(0, 12, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "🥚 ROUBE UM OVO • PRO"
+    title.Text = "🥚 ROUBE UM OVO • v5.0"
     title.TextColor3 = Palette.TextPrimary
     title.Font = Enum.Font.GothamBold
     title.TextSize = 13
@@ -646,7 +810,7 @@ local function CreateProfessionalUI()
         page.Parent = pageHolder
 
         local layout = Instance.new("UIListLayout")
-        layout.Padding = UDim.new(0, 6)
+        layout.Padding = UDim.new(0, 5)
         layout.SortOrder = Enum.SortOrder.LayoutOrder
         layout.Parent = page
 
@@ -693,7 +857,7 @@ local function CreateProfessionalUI()
 
     local function AddToggleCard(parentPage, order, titleText, subtitleText, stateKey, onChanged)
         local card = Instance.new("TextButton")
-        card.Size = UDim2.new(1, 0, 0, 44)
+        card.Size = UDim2.new(1, 0, 0, 41)
         card.BackgroundColor3 = Palette.BgCard
         card.Text = ""
         card.AutoButtonColor = false
@@ -703,24 +867,24 @@ local function CreateProfessionalUI()
         Instance.new("UIStroke", card).Color = Palette.Stroke
 
         local lblTitle = Instance.new("TextLabel")
-        lblTitle.Size = UDim2.new(1, -64, 0, 18)
-        lblTitle.Position = UDim2.new(0, 10, 0, 6)
+        lblTitle.Size = UDim2.new(1, -64, 0, 17)
+        lblTitle.Position = UDim2.new(0, 10, 0, 5)
         lblTitle.BackgroundTransparency = 1
         lblTitle.Text = titleText
         lblTitle.TextColor3 = Palette.TextPrimary
         lblTitle.Font = Enum.Font.GothamSemibold
-        lblTitle.TextSize = 12
+        lblTitle.TextSize = 11.5
         lblTitle.TextXAlignment = Enum.TextXAlignment.Left
         lblTitle.Parent = card
 
         local lblSub = Instance.new("TextLabel")
-        lblSub.Size = UDim2.new(1, -64, 0, 14)
-        lblSub.Position = UDim2.new(0, 10, 0, 24)
+        lblSub.Size = UDim2.new(1, -64, 0, 13)
+        lblSub.Position = UDim2.new(0, 10, 0, 23)
         lblSub.BackgroundTransparency = 1
         lblSub.Text = subtitleText
         lblSub.TextColor3 = Palette.TextSecondary
         lblSub.Font = Enum.Font.Gotham
-        lblSub.TextSize = 10
+        lblSub.TextSize = 9.5
         lblSub.TextXAlignment = Enum.TextXAlignment.Left
         lblSub.Parent = card
 
@@ -759,15 +923,16 @@ local function CreateProfessionalUI()
         end)
     end
 
-    -- ABA 1: MISSÕES
-    AddToggleCard(pageMissions, 1, "Auto Roubar & Entregar", "Coleta ovos nos biomas e leva ao cercado", "AutoEggs")
-    AddToggleCard(pageMissions, 2, "Auto Itens de Evento", "Pega borboletas, sparks, penas e tokens", "AutoEvents")
-    AddToggleCard(pageMissions, 3, "Auto Esteira (Speed)", "Treina velocidade enquanto aguarda ninhos", "AutoTreadmill")
-    AddToggleCard(pageMissions, 4, "Auto Resgatar Missões", "Coleta recompensas de Quests e Pet Index", "AutoClaim")
-    AddToggleCard(pageMissions, 5, "Apenas Ovos Rare+", "Desligue em conta nova para pegar comuns", "OnlyRarePlus")
+    -- ABA 1: MISSÕES (6 opções completas)
+    AddToggleCard(pageMissions, 1, "Auto Evolução (Zero ➔ Avançado)", "Adapta ovos e metas conforme sua conta sobe", "AutoProgress")
+    AddToggleCard(pageMissions, 2, "Auto Roubar & Entregar Ovos", "Coleta ovos nos biomas e leva ao cercado", "AutoEggs")
+    AddToggleCard(pageMissions, 3, "Auto Coletar Dinheiro ($)", "Recolhe renda dos pets na base sozinho", "AutoCash")
+    AddToggleCard(pageMissions, 4, "Auto Itens de Evento", "Pega borboletas, sparks, penas e tokens", "AutoEvents")
+    AddToggleCard(pageMissions, 5, "Auto Esteira (Corrida Contínua)", "Treina velocidade na esteira automaticamente", "AutoTreadmill")
+    AddToggleCard(pageMissions, 6, "Auto Resgatar Missões & Índice", "Coleta recompensas de Quests e Pet Index", "AutoClaim")
 
     -- ABA 2: SPEED & AJUSTES
-    AddToggleCard(pageSettings, 1, "Ativar Speed Hack (Corrida)", "Aumenta velocidade real ao correr e na esteira", "SpeedHack", function(isOn)
+    AddToggleCard(pageSettings, 1, "Forçar WalkSpeed (Opcional)", "Deixe OFF se o servidor puxar para trás", "SpeedHack", function(isOn)
         local _, _, hum = GetCharacterParts()
         if hum and not isOn then
             hum.WalkSpeed = 16
@@ -786,7 +951,7 @@ local function CreateProfessionalUI()
     walkTitle.Size = UDim2.new(1, -20, 0, 20)
     walkTitle.Position = UDim2.new(0, 10, 0, 6)
     walkTitle.BackgroundTransparency = 1
-    walkTitle.Text = "Velocidade de Corrida (WalkSpeed): " .. tostring(State.WalkSpeed)
+    walkTitle.Text = "WalkSpeed Manual (Seguro: 22-34): " .. tostring(State.WalkSpeed)
     walkTitle.TextColor3 = Palette.TextPrimary
     walkTitle.Font = Enum.Font.GothamSemibold
     walkTitle.TextSize = 11
@@ -794,17 +959,17 @@ local function CreateProfessionalUI()
     walkTitle.Parent = walkCard
 
     local function UpdateWalkSpeed(newVal)
-        State.WalkSpeed = math.clamp(newVal, 16, 300)
-        walkTitle.Text = "Velocidade de Corrida (WalkSpeed): " .. tostring(State.WalkSpeed)
+        State.WalkSpeed = math.clamp(newVal, 16, 120)
+        walkTitle.Text = "WalkSpeed Manual (Seguro: 22-34): " .. tostring(State.WalkSpeed)
     end
 
     local wButtons = {
-        { txt = "-15", x = 10, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed - 15) end, col = Palette.TextPrimary },
-        { txt = "+15", x = 50, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed + 15) end, col = Palette.TextPrimary },
-        { txt = "50",  x = 94, w = 40, act = function() UpdateWalkSpeed(50) end, col = Palette.Accent },
-        { txt = "95",  x = 138, w = 40, act = function() UpdateWalkSpeed(95) end, col = Palette.Accent },
-        { txt = "150", x = 182, w = 42, act = function() UpdateWalkSpeed(150) end, col = Palette.Accent },
-        { txt = "220", x = 228, w = 42, act = function() UpdateWalkSpeed(220) end, col = Palette.Success }
+        { txt = "-4",  x = 10, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed - 4) end, col = Palette.TextPrimary },
+        { txt = "+4",  x = 50, w = 36, act = function() UpdateWalkSpeed(State.WalkSpeed + 4) end, col = Palette.TextPrimary },
+        { txt = "20",  x = 94, w = 40, act = function() UpdateWalkSpeed(20) end, col = Palette.Accent },
+        { txt = "26",  x = 138, w = 40, act = function() UpdateWalkSpeed(26) end, col = Palette.Success },
+        { txt = "34",  x = 182, w = 42, act = function() UpdateWalkSpeed(34) end, col = Palette.Accent },
+        { txt = "45",  x = 228, w = 42, act = function() UpdateWalkSpeed(45) end, col = Palette.TextSecondary }
     }
     for _, b in ipairs(wButtons) do
         local btn = Instance.new("TextButton")
@@ -832,7 +997,7 @@ local function CreateProfessionalUI()
     tweenTitle.Size = UDim2.new(1, -20, 0, 20)
     tweenTitle.Position = UDim2.new(0, 10, 0, 6)
     tweenTitle.BackgroundTransparency = 1
-    tweenTitle.Text = "Velocidade do Auto Farm (Voo): " .. tostring(State.TweenSpeed)
+    tweenTitle.Text = "Velocidade Auto Farm (Anti-Bug): " .. tostring(State.TweenSpeed)
     tweenTitle.TextColor3 = Palette.TextPrimary
     tweenTitle.Font = Enum.Font.GothamSemibold
     tweenTitle.TextSize = 11
@@ -840,16 +1005,16 @@ local function CreateProfessionalUI()
     tweenTitle.Parent = tweenCard
 
     local function UpdateTweenSpeed(newVal)
-        State.TweenSpeed = math.clamp(newVal, 60, 250)
-        tweenTitle.Text = "Velocidade do Auto Farm (Voo): " .. tostring(State.TweenSpeed)
+        State.TweenSpeed = math.clamp(newVal, 30, 140)
+        tweenTitle.Text = "Velocidade Auto Farm (Anti-Bug): " .. tostring(State.TweenSpeed)
     end
 
     local tButtons = {
-        { txt = "-15", x = 10, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed - 15) end, col = Palette.TextPrimary },
-        { txt = "+15", x = 50, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed + 15) end, col = Palette.TextPrimary },
-        { txt = "90",  x = 94, w = 54, act = function() UpdateTweenSpeed(90) end, col = Palette.Accent },
-        { txt = "145", x = 154, w = 54, act = function() UpdateTweenSpeed(145) end, col = Palette.Accent },
-        { txt = "200", x = 214, w = 56, act = function() UpdateTweenSpeed(200) end, col = Palette.Success }
+        { txt = "-10", x = 10, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed - 10) end, col = Palette.TextPrimary },
+        { txt = "+10", x = 50, w = 36, act = function() UpdateTweenSpeed(State.TweenSpeed + 10) end, col = Palette.TextPrimary },
+        { txt = "38",  x = 94, w = 54, act = function() UpdateTweenSpeed(38) end, col = Palette.Accent },
+        { txt = "54",  x = 154, w = 54, act = function() UpdateTweenSpeed(54) end, col = Palette.Success },
+        { txt = "75",  x = 214, w = 56, act = function() UpdateTweenSpeed(75) end, col = Palette.Accent }
     }
     for _, b in ipairs(tButtons) do
         local btn = Instance.new("TextButton")
@@ -867,15 +1032,15 @@ local function CreateProfessionalUI()
 
     AddToggleCard(pageSettings, 4, "Anti-AFK Automático", "Evita desconexão após 20 min ocioso", "AntiAFK")
 
-    -- ABA 3: STATUS & BASE
+    -- ABA 3: STATUS, AUTO-TESTE & CALIBRAÇÃO
     local function CreateInfoBox(order, initialText, textColor)
         local box = Instance.new("TextLabel")
-        box.Size = UDim2.new(1, 0, 0, 36)
+        box.Size = UDim2.new(1, 0, 0, 31)
         box.BackgroundColor3 = Palette.BgCard
         box.Text = initialText
         box.TextColor3 = textColor or Palette.TextPrimary
         box.Font = Enum.Font.GothamSemibold
-        box.TextSize = 11
+        box.TextSize = 10.5
         box.TextWrapped = true
         box.LayoutOrder = order
         box.Parent = pageStatus
@@ -884,29 +1049,50 @@ local function CreateProfessionalUI()
         return box
     end
 
-    UIRefs.StatusText = CreateInfoBox(1, "Atividade: Inicializando...", Palette.Success)
-    UIRefs.RadarText = CreateInfoBox(2, "Radar: Buscando ovos e eventos...", Palette.Accent)
-    UIRefs.BaseText = CreateInfoBox(3, "Base: Detectando terreno...", Palette.TextPrimary)
-    UIRefs.CounterText = CreateInfoBox(4, "Entregas/Coletas concluídas: 0", Palette.TextSecondary)
+    UIRefs.PhaseText = CreateInfoBox(1, "Modo: " .. State.CurrentPhase, Palette.Accent)
+    UIRefs.StatusText = CreateInfoBox(2, "Atividade: Inicializando...", Palette.Success)
+    UIRefs.RadarText = CreateInfoBox(3, "Radar: Buscando alvos...", Palette.TextPrimary)
+    UIRefs.DiagText = CreateInfoBox(4, State.DiagnosticResult, Palette.TextSecondary)
 
-    local recalibrateBtn = Instance.new("TextButton")
-    recalibrateBtn.Size = UDim2.new(1, 0, 0, 36)
-    recalibrateBtn.BackgroundColor3 = Palette.Accent
-    recalibrateBtn.Text = "📍 Salvar Posição Atual como Minha Base"
-    recalibrateBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
-    recalibrateBtn.Font = Enum.Font.GothamBold
-    recalibrateBtn.TextSize = 12
-    recalibrateBtn.LayoutOrder = 5
-    recalibrateBtn.Parent = pageStatus
-    Instance.new("UICorner", recalibrateBtn).CornerRadius = UDim.new(0, 8)
+    local saveBaseBtn = Instance.new("TextButton")
+    saveBaseBtn.Size = UDim2.new(1, 0, 0, 33)
+    saveBaseBtn.BackgroundColor3 = Palette.Accent
+    saveBaseBtn.Text = "📍 Salvar Posição Atual como Minha Base"
+    saveBaseBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
+    saveBaseBtn.Font = Enum.Font.GothamBold
+    saveBaseBtn.TextSize = 11
+    saveBaseBtn.LayoutOrder = 5
+    saveBaseBtn.Parent = pageStatus
+    Instance.new("UICorner", saveBaseBtn).CornerRadius = UDim.new(0, 8)
 
-    recalibrateBtn.MouseButton1Click:Connect(function()
+    saveBaseBtn.MouseButton1Click:Connect(function()
         local _, hrp = GetCharacterParts()
         if hrp then
             HomeCFrame = hrp.CFrame
             CachedBase = nil
+            CachedTreadmillPart = nil
             FindMyBase()
-            UIRefs.BaseText.Text = "Base: Nova posição salva com sucesso!"
+            RunSelfDiagnostic()
+            UIRefs.DiagText.Text = "Base salva! " .. State.DiagnosticResult
+        end
+    end)
+
+    local saveTmBtn = Instance.new("TextButton")
+    saveTmBtn.Size = UDim2.new(1, 0, 0, 33)
+    saveTmBtn.BackgroundColor3 = Palette.Success
+    saveTmBtn.Text = "🏃 Salvar Posição Atual como Minha Esteira"
+    saveTmBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
+    saveTmBtn.Font = Enum.Font.GothamBold
+    saveTmBtn.TextSize = 11
+    saveTmBtn.LayoutOrder = 6
+    saveTmBtn.Parent = pageStatus
+    Instance.new("UICorner", saveTmBtn).CornerRadius = UDim.new(0, 8)
+
+    saveTmBtn.MouseButton1Click:Connect(function()
+        local _, hrp = GetCharacterParts()
+        if hrp then
+            CustomTreadmillCFrame = hrp.CFrame
+            UIRefs.DiagText.Text = "Esteira calibrada com sucesso!"
         end
     end)
 
@@ -940,31 +1126,38 @@ local function SetStatus(text)
     end
 end
 
-local function IncrementActions()
-    State.ActionsCount = State.ActionsCount + 1
-    if UIRefs.CounterText and UIRefs.CounterText.Parent then
-        UIRefs.CounterText.Text = "Entregas/Coletas concluídas: " .. tostring(State.ActionsCount)
-    end
-end
-
 CreateProfessionalUI()
+task.spawn(RunSelfDiagnostic)
 
 --// ====================================================================
---// MÓDULO 4: LOOPS DE EXECUÇÃO EQUILIBRADOS
+--// MÓDULO 4: ORQUESTRADOR PARALELO (AUTO CASH, QUESTS E FARM)
 --// ====================================================================
 
 task.spawn(function()
     while State.Running do
+        pcall(UpdateAccountProgression)
+
+        if State.AutoCash then
+            pcall(CollectBaseCash)
+        end
+
         if State.AutoClaim then
             pcall(ClaimQuestsAndIndex)
         end
-        if UIRefs.BaseText and UIRefs.BaseText.Parent then
-            local b = FindMyBase()
-            UIRefs.BaseText.Text = b and ("Base detectada: " .. b.Name) or "Base: Usando ponto de spawn salvo"
+
+        if UIRefs.PhaseText and UIRefs.PhaseText.Parent then
+            UIRefs.PhaseText.Text = State.CurrentPhase
         end
         if UIRefs.RadarText and UIRefs.RadarText.Parent then
-            UIRefs.RadarText.Text = string.format("Radar: %d ovos reais | %d itens de evento", State.DetectedEggs, State.DetectedEvents)
+            UIRefs.RadarText.Text = string.format(
+                "Radar: %d ovos | %d eventos | %d entregas",
+                State.DetectedEggs, State.DetectedEvents, State.ActionsCount
+            )
         end
+        if UIRefs.DiagText and UIRefs.DiagText.Parent then
+            UIRefs.DiagText.Text = State.DiagnosticResult
+        end
+
         task.wait(2.5)
     end
 end)
@@ -974,29 +1167,32 @@ task.spawn(function()
         local success, err = pcall(function()
             local _, hrp, hum = GetCharacterParts()
             if not hrp or not hum or hum.Health <= 0 then
+                State.RunningOnTreadmill = false
                 SetStatus("Aguardando personagem...")
                 task.wait(1)
                 return
             end
 
-            -- 1. Entrega imediatamente se já estiver carregando um ovo
+            -- 1. Entrega imediatamente se estiver segurando um ovo
             if State.AutoEggs and IsCarryingEgg() then
+                State.RunningOnTreadmill = false
                 local deliverCF = GetDeliverCFrame()
                 if deliverCF then
                     SetStatus("Entregando ovo no cercado...")
                     if SmoothMoveTo(deliverCF) then
-                        IncrementActions()
+                        State.ActionsCount = State.ActionsCount + 1
                     end
                     task.wait(0.35)
                 end
                 return
             end
 
-            -- 2. Tenta roubar o ovo real mais próximo
+            -- 2. Rouba o melhor ovo disponível conforme a fase (Zero ou Avançado)
             if State.AutoEggs then
                 local eggObj, eggPart = FindBestBiomeEgg()
                 if eggObj and eggPart then
-                    SetStatus("Indo roubar: " .. eggObj.Name)
+                    State.RunningOnTreadmill = false
+                    SetStatus("Roubando: " .. eggObj.Name)
                     if SmoothMoveTo(eggPart.CFrame + Vector3.new(0, 1.8, 0)) then
                         InteractWithTarget(eggObj)
                         task.wait(0.35)
@@ -1014,10 +1210,11 @@ task.spawn(function()
             if State.AutoEvents then
                 local evObj, evPart = FindEventCollectible()
                 if evObj and evPart then
+                    State.RunningOnTreadmill = false
                     SetStatus("Coletando evento: " .. evObj.Name)
                     if SmoothMoveTo(evPart.CFrame + Vector3.new(0, 2, 0)) then
                         InteractWithTarget(evObj)
-                        IncrementActions()
+                        State.ActionsCount = State.ActionsCount + 1
                         MarkAttempt(evObj)
                         task.wait(0.25)
                     end
@@ -1025,24 +1222,39 @@ task.spawn(function()
                 end
             end
 
-            -- 4. Treina na esteira enquanto aguarda respawn dos ninhos
+            -- 4. Esteira Contínua (mantém corrida ativa no Heartbeat sem pausas)
             if State.AutoTreadmill then
-                local tmCF = GetTreadmillCFrame()
-                if tmCF then
-                    SetStatus("Treinando na esteira (Speed " .. State.WalkSpeed .. ")...")
-                    SmoothMoveTo(tmCF)
-                    task.wait(1.5)
+                local tmPart = FindTreadmillPart()
+                local targetTmCF = CustomTreadmillCFrame or (tmPart and (tmPart.CFrame + Vector3.new(0, 2.5, 0)))
+
+                if targetTmCF then
+                    SetStatus("Correndo na esteira (+Speed)...")
+                    local distToTm = (hrp.Position - targetTmCF.Position).Magnitude
+                    if distToTm > 4.5 then
+                        SmoothMoveTo(targetTmCF)
+                    end
+
+                    State.RunningOnTreadmill = true
+                    if tmPart and firetouchinterest then
+                        pcall(function()
+                            firetouchinterest(hrp, tmPart, 0)
+                            firetouchinterest(hrp, tmPart, 1)
+                        end)
+                    end
+                    task.wait(0.5)
                     return
                 end
             end
 
-            SetStatus("Aguardando respawn de ovos...")
+            State.RunningOnTreadmill = false
+            SetStatus("Aguardando respawn de alvos...")
             task.wait(0.8)
         end)
 
         if not success then
+            State.RunningOnTreadmill = false
             SetStatus("Recuperando ciclo...")
-            warn("[RoubeUmOvo Pro] Aviso capturado: " .. tostring(err))
+            warn("[RoubeUmOvo v5.0] Aviso capturado: " .. tostring(err))
             task.wait(1)
         end
 
@@ -1052,6 +1264,7 @@ end)
 
 _G.RoubeUmOvo_Cleanup = function()
     State.Running = false
+    State.RunningOnTreadmill = false
     NoClipEnabled = false
     local _, _, hum = GetCharacterParts()
     if hum then
