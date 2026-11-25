@@ -1,6 +1,6 @@
 --// ====================================================================
---// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v3.5
---// Correção de Prioridade, Anti-Stuck e Speed Hack Real (WalkSpeed)
+--// ROUBE UM OVO (STEAL AN EGG) - AUTO MISSÕES PRO v4.0
+--// Filtro de Ovos Reais, Dupla Interação e Speed Hack (WalkSpeed)
 --// ====================================================================
 
 if _G.RoubeUmOvo_Cleanup then
@@ -29,10 +29,12 @@ local State = {
     OnlyRarePlus = (Config.OnlyRarePlus ~= nil) and Config.OnlyRarePlus or false,
     SpeedHack = true,
     AntiAFK = true,
-    WalkSpeed = Config.WalkSpeed or 95,   -- Velocidade real de corrida (pernas/esteira)
-    TweenSpeed = Config.MoveSpeed or 145, -- Velocidade de deslocamento suave
+    WalkSpeed = Config.WalkSpeed or 95,
+    TweenSpeed = Config.MoveSpeed or 145,
     Status = "Pronto para iniciar",
-    ActionsCount = 0
+    ActionsCount = 0,
+    DetectedEggs = 0,
+    DetectedEvents = 0
 }
 
 local Connections = {}
@@ -40,7 +42,6 @@ local ActiveTween = nil
 local HomeCFrame = nil
 local CachedBase = nil
 
--- Controle anti-travamento para objetos inalcançáveis
 local TargetAttempts = {}
 local BlacklistedUntil = {}
 
@@ -49,7 +50,7 @@ local function MarkAttempt(obj)
     local count = (TargetAttempts[obj] or 0) + 1
     TargetAttempts[obj] = count
     if count >= 2 then
-        BlacklistedUntil[obj] = os.clock() + 30
+        BlacklistedUntil[obj] = os.clock() + 120
         TargetAttempts[obj] = 0
     end
 end
@@ -83,15 +84,12 @@ local function GetCharacterParts()
     return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChildOfClass("Humanoid")
 end
 
--- Mantém o WalkSpeed aplicado mesmo se o jogo tentar resetar para o padrão
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if not State.Running then return end
     local _, _, hum = GetCharacterParts()
-    if hum and hum.Health > 0 then
-        if State.SpeedHack then
-            if hum.WalkSpeed ~= State.WalkSpeed then
-                hum.WalkSpeed = State.WalkSpeed
-            end
+    if hum and hum.Health > 0 and State.SpeedHack then
+        if hum.WalkSpeed ~= State.WalkSpeed then
+            hum.WalkSpeed = State.WalkSpeed
         end
     end
 end))
@@ -164,11 +162,11 @@ local function SmoothMoveTo(targetCFrame)
     return completed
 end
 
+-- Interação dupla (fireproximityprompt + HoldDuration + Touch)
 local function InteractWithTarget(instance)
     if not instance then return end
     local _, hrp = GetCharacterParts()
 
-    -- 1. Aciona ProximityPrompt se existir
     local prompt = instance:FindFirstChildWhichIsA("ProximityPrompt", true)
         or (instance.Parent and instance.Parent:FindFirstChildWhichIsA("ProximityPrompt", true))
 
@@ -176,15 +174,13 @@ local function InteractWithTarget(instance)
         pcall(function()
             if fireproximityprompt then
                 fireproximityprompt(prompt)
-            else
-                prompt:InputHoldBegin()
-                task.wait((prompt.HoldDuration or 0) + 0.08)
-                prompt:InputHoldEnd()
             end
+            prompt:InputHoldBegin()
+            task.wait((prompt.HoldDuration or 0) + 0.12)
+            prompt:InputHoldEnd()
         end)
     end
 
-    -- 2. Aciona ClickDetector se existir
     local clicker = instance:FindFirstChildWhichIsA("ClickDetector", true)
         or (instance.Parent and instance.Parent:FindFirstChildWhichIsA("ClickDetector", true))
 
@@ -192,29 +188,28 @@ local function InteractWithTarget(instance)
         pcall(function() fireclickdetector(clicker) end)
     end
 
-    -- 3. Simula toque físico em todas as partes do alvo
     if hrp and firetouchinterest then
+        local parts = {}
         if instance:IsA("BasePart") then
-            pcall(function()
-                firetouchinterest(hrp, instance, 0)
-                task.wait(0.04)
-                firetouchinterest(hrp, instance, 1)
-            end)
+            table.insert(parts, instance)
         end
         for _, p in ipairs(instance:GetDescendants()) do
             if p:IsA("BasePart") then
-                pcall(function()
-                    firetouchinterest(hrp, p, 0)
-                    task.wait(0.03)
-                    firetouchinterest(hrp, p, 1)
-                end)
+                table.insert(parts, p)
             end
+        end
+        for _, p in ipairs(parts) do
+            pcall(function()
+                firetouchinterest(hrp, p, 0)
+                task.wait(0.03)
+                firetouchinterest(hrp, p, 1)
+            end)
         end
     end
 end
 
 --// ====================================================================
---// MÓDULO 2: DETECÇÃO DE BASE, OVOS E EVENTOS
+--// MÓDULO 2: DETECÇÃO DE BASE, OVOS REAIS E EVENTOS
 --// ====================================================================
 
 local function FindMyBase()
@@ -326,9 +321,29 @@ local function IsInsideMyBase(obj)
     end
     if HomeCFrame then
         local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
-        if part and (part.Position - HomeCFrame.Position).Magnitude < 35 then
+        if part and (part.Position - HomeCFrame.Position).Magnitude < 38 then
             return true
         end
+    end
+    return false
+end
+
+-- Verifica se o objeto está dentro da base de outro jogador
+local function IsInsideOtherPlayerBase(obj)
+    local curr = obj.Parent
+    while curr and curr ~= Workspace do
+        local n = curr.Name:lower()
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                if n:find(plr.Name:lower(), 1, true) or n:find(tostring(plr.UserId), 1, true) then
+                    return true
+                end
+            end
+        end
+        if n:find("fuse") or n:find("shop") or n:find("loja") or n:find("vender") or n:find("sell") then
+            return true
+        end
+        curr = curr.Parent
     end
     return false
 end
@@ -338,22 +353,37 @@ local function FindBestBiomeEgg()
     if not hrp then return nil, nil end
 
     local bestTarget, bestPart, bestPriority = nil, nil, -math.huge
+    local validCount = 0
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) and not IsBlacklisted(obj) then
+        if (obj:IsA("Model") or obj:IsA("BasePart"))
+            and not IsInsideMyBase(obj)
+            and not IsInsideOtherPlayerBase(obj)
+            and not IsBlacklisted(obj) then
+
             local n = obj.Name:lower()
-            if (n:find("egg") or n:find("ovo")) and not n:find("guardian") and not n:find("shop") and not n:find("ui") and not n:find("machine") then
+            if (n:find("egg") or n:find("ovo"))
+                and not n:find("guardian")
+                and not n:find("shop")
+                and not n:find("ui")
+                and not n:find("machine")
+                and not n:find("royal") then
+
                 local rarity = GetRarityScore(n)
                 if not State.OnlyRarePlus or rarity >= 30 then
                     local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
                     if part and part.Transparency < 0.9 then
-                        local hasPrompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true) ~= nil
-                        local hasTouch = obj:FindFirstChildWhichIsA("TouchTransmitter", true) ~= nil or part:FindFirstChildOfClass("TouchTransmitter") ~= nil
-                        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
-                        if hasPrompt or hasTouch or parentName:find("egg") or parentName:find("nest") or parentName:find("spawn") then
+                        -- Exige que tenha ProximityPrompt ativo, ClickDetector ou TouchTransmitter real
+                        local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+                        local hasActivePrompt = (prompt ~= nil and prompt.Enabled)
+                        local hasClick = obj:FindFirstChildWhichIsA("ClickDetector", true) ~= nil
+                        local hasTouch = obj:FindFirstChildWhichIsA("TouchTransmitter", true) ~= nil
+
+                        if hasActivePrompt or hasClick or hasTouch then
+                            validCount = validCount + 1
                             local dist = (hrp.Position - part.Position).Magnitude
-                            -- Prioriza distância próxima em contas novas + bônus moderado de raridade
-                            local priority = (rarity * 4) - dist
+                            -- Prioriza distância próxima + pequeno bônus de raridade
+                            local priority = (rarity * 2) - dist
                             if priority > bestPriority then
                                 bestPriority = priority
                                 bestTarget = obj
@@ -365,6 +395,8 @@ local function FindBestBiomeEgg()
             end
         end
     end
+
+    State.DetectedEggs = validCount
     return bestTarget, bestPart
 end
 
@@ -378,14 +410,20 @@ local function FindEventCollectible()
     if not hrp then return nil, nil end
 
     local closestObj, closestPart, minDist = nil, nil, math.huge
+    local evCount = 0
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and not IsInsideMyBase(obj) and not IsBlacklisted(obj) then
+        if (obj:IsA("Model") or obj:IsA("BasePart"))
+            and not IsInsideMyBase(obj)
+            and not IsInsideOtherPlayerBase(obj)
+            and not IsBlacklisted(obj) then
+
             local n = obj.Name:lower()
             for _, kw in ipairs(EventKeywords) do
                 if n:find(kw, 1, true) then
                     local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart", true))
                     if part and part.Transparency < 0.9 then
+                        evCount = evCount + 1
                         local d = (hrp.Position - part.Position).Magnitude
                         if d < minDist then
                             minDist = d
@@ -398,6 +436,8 @@ local function FindEventCollectible()
             end
         end
     end
+
+    State.DetectedEvents = evCount
     return closestObj, closestPart
 end
 
@@ -438,22 +478,20 @@ local function ClaimQuestsAndIndex()
 end
 
 --// ====================================================================
---// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v3.5)
+--// MÓDULO 3: PAINEL PROFISSIONAL MOBILE (DELTA HUB v4.0)
 --// ====================================================================
 
 local UIRefs = {
     StatusText = nil,
+    RadarText = nil,
     BaseText = nil,
-    CounterText = nil,
-    WalkSpeedText = nil,
-    TweenSpeedText = nil
+    CounterText = nil
 }
 
 local Palette = {
     BgMain = Color3.fromRGB(15, 17, 26),
     BgHeader = Color3.fromRGB(22, 26, 39),
     BgCard = Color3.fromRGB(24, 28, 42),
-    BgCardHover = Color3.fromRGB(30, 35, 52),
     Stroke = Color3.fromRGB(45, 53, 78),
     Accent = Color3.fromRGB(0, 195, 255),
     Success = Color3.fromRGB(16, 185, 129),
@@ -736,7 +774,6 @@ local function CreateProfessionalUI()
         end
     end)
 
-    -- Card 1: Velocidade Real de Corrida (WalkSpeed)
     local walkCard = Instance.new("Frame")
     walkCard.Size = UDim2.new(1, 0, 0, 68)
     walkCard.BackgroundColor3 = Palette.BgCard
@@ -783,7 +820,6 @@ local function CreateProfessionalUI()
         btn.MouseButton1Click:Connect(b.act)
     end
 
-    -- Card 2: Velocidade de Teleporte Suave (Tween)
     local tweenCard = Instance.new("Frame")
     tweenCard.Size = UDim2.new(1, 0, 0, 68)
     tweenCard.BackgroundColor3 = Palette.BgCard
@@ -834,7 +870,7 @@ local function CreateProfessionalUI()
     -- ABA 3: STATUS & BASE
     local function CreateInfoBox(order, initialText, textColor)
         local box = Instance.new("TextLabel")
-        box.Size = UDim2.new(1, 0, 0, 44)
+        box.Size = UDim2.new(1, 0, 0, 36)
         box.BackgroundColor3 = Palette.BgCard
         box.Text = initialText
         box.TextColor3 = textColor or Palette.TextPrimary
@@ -849,17 +885,18 @@ local function CreateProfessionalUI()
     end
 
     UIRefs.StatusText = CreateInfoBox(1, "Atividade: Inicializando...", Palette.Success)
-    UIRefs.BaseText = CreateInfoBox(2, "Base: Detectando terreno...", Palette.TextPrimary)
-    UIRefs.CounterText = CreateInfoBox(3, "Entregas/Coletas concluídas: 0", Palette.Accent)
+    UIRefs.RadarText = CreateInfoBox(2, "Radar: Buscando ovos e eventos...", Palette.Accent)
+    UIRefs.BaseText = CreateInfoBox(3, "Base: Detectando terreno...", Palette.TextPrimary)
+    UIRefs.CounterText = CreateInfoBox(4, "Entregas/Coletas concluídas: 0", Palette.TextSecondary)
 
     local recalibrateBtn = Instance.new("TextButton")
-    recalibrateBtn.Size = UDim2.new(1, 0, 0, 40)
+    recalibrateBtn.Size = UDim2.new(1, 0, 0, 36)
     recalibrateBtn.BackgroundColor3 = Palette.Accent
     recalibrateBtn.Text = "📍 Salvar Posição Atual como Minha Base"
     recalibrateBtn.TextColor3 = Color3.fromRGB(10, 15, 25)
     recalibrateBtn.Font = Enum.Font.GothamBold
     recalibrateBtn.TextSize = 12
-    recalibrateBtn.LayoutOrder = 4
+    recalibrateBtn.LayoutOrder = 5
     recalibrateBtn.Parent = pageStatus
     Instance.new("UICorner", recalibrateBtn).CornerRadius = UDim.new(0, 8)
 
@@ -913,7 +950,7 @@ end
 CreateProfessionalUI()
 
 --// ====================================================================
---// MÓDULO 4: LOOPS DE EXECUÇÃO COM PRIORIDADE CORRIGIDA
+--// MÓDULO 4: LOOPS DE EXECUÇÃO EQUILIBRADOS
 --// ====================================================================
 
 task.spawn(function()
@@ -925,7 +962,10 @@ task.spawn(function()
             local b = FindMyBase()
             UIRefs.BaseText.Text = b and ("Base detectada: " .. b.Name) or "Base: Usando ponto de spawn salvo"
         end
-        task.wait(3)
+        if UIRefs.RadarText and UIRefs.RadarText.Parent then
+            UIRefs.RadarText.Text = string.format("Radar: %d ovos reais | %d itens de evento", State.DetectedEggs, State.DetectedEvents)
+        end
+        task.wait(2.5)
     end
 end)
 
@@ -939,7 +979,7 @@ task.spawn(function()
                 return
             end
 
-            -- 1. Se já estiver carregando um ovo, entrega na base imediatamente
+            -- 1. Entrega imediatamente se já estiver carregando um ovo
             if State.AutoEggs and IsCarryingEgg() then
                 local deliverCF = GetDeliverCFrame()
                 if deliverCF then
@@ -952,31 +992,32 @@ task.spawn(function()
                 return
             end
 
-            -- 2. Prioridade Principal: Roubar o ovo mais próximo/melhor
+            -- 2. Tenta roubar o ovo real mais próximo
             if State.AutoEggs then
                 local eggObj, eggPart = FindBestBiomeEgg()
                 if eggObj and eggPart then
-                    SetStatus("Roubando: " .. eggObj.Name)
-                    if SmoothMoveTo(eggPart.CFrame + Vector3.new(0, 2.5, 0)) then
+                    SetStatus("Indo roubar: " .. eggObj.Name)
+                    if SmoothMoveTo(eggPart.CFrame + Vector3.new(0, 1.8, 0)) then
                         InteractWithTarget(eggObj)
                         task.wait(0.35)
-                        if not IsCarryingEgg() then
-                            MarkAttempt(eggObj)
-                        else
+                        if IsCarryingEgg() then
                             TargetAttempts[eggObj] = 0
+                            return
+                        else
+                            MarkAttempt(eggObj)
                         end
                     end
-                    return
                 end
             end
 
-            -- 3. Coletar itens de evento (ignora se falhar 2x seguidas)
+            -- 3. Coleta itens de evento disponíveis
             if State.AutoEvents then
                 local evObj, evPart = FindEventCollectible()
                 if evObj and evPart then
                     SetStatus("Coletando evento: " .. evObj.Name)
                     if SmoothMoveTo(evPart.CFrame + Vector3.new(0, 2, 0)) then
                         InteractWithTarget(evObj)
+                        IncrementActions()
                         MarkAttempt(evObj)
                         task.wait(0.25)
                     end
@@ -984,13 +1025,13 @@ task.spawn(function()
                 end
             end
 
-            -- 4. Treinar na esteira com o WalkSpeed turbinado
+            -- 4. Treina na esteira enquanto aguarda respawn dos ninhos
             if State.AutoTreadmill then
                 local tmCF = GetTreadmillCFrame()
                 if tmCF then
-                    SetStatus("Correndo na esteira (Speed " .. State.WalkSpeed .. ")...")
+                    SetStatus("Treinando na esteira (Speed " .. State.WalkSpeed .. ")...")
                     SmoothMoveTo(tmCF)
-                    task.wait(1.2)
+                    task.wait(1.5)
                     return
                 end
             end
